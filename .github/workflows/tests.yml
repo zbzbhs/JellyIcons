@@ -30,6 +30,8 @@ jobs:
           pip install pyflakes
 
       - name: Lint (pyflakes)
+        # 必须用 bash：pwsh 不展开 glob，python -m pyflakes *.py 会拿到字面量
+        shell: bash
         run: python -m pyflakes jellyicons/*.py *.py tests/*.py
 
       - name: Unit tests + smoke
