@@ -1,0 +1,226 @@
+# Changelog
+
+本项目遵循 [Semantic Versioning](https://semver.org/)。
+
+## [1.5.0] - 2026-11-02
+
+全面审查（约 3500 行）后按优先级修的一批"真会咬人"的问题。
+核心原则：**宁可不动，也不要把桌面弄空**。
+
+### Fixed — 桌面安全
+
+- **副本不完整也照样隐藏真图标**：`_prime_before_hide()` 原来只管画，
+  不检查画的是不是全部图标。UIA 失败、位图缺失、名称对不上时会出现
+  "真图标已隐藏、副本没画出来"的空桌面。现在是硬门槛：必须有有效快照、
+  `_desktop_keys` 与 overlay 集合**完全一致**、每一项都绘制成功
+  （`ready is True`），任一不满足就保留真图标并 warning。
+- **恢复失败仍然清心跳**：`restore()` 原来吞异常、`close()` 无条件清心跳，
+  一旦恢复失败看门狗就被"解除武装"，真图标永久消失。现在 `restore()`
+  返回 `bool`，只有确认 `IsWindowVisible` 为真才清心跳，失败保留
+  `hidden=True` 心跳让看门狗继续重试。
+- **`ShowWindow` 返回值被当成成功标志**：它的返回值是"调用前是否可见"，
+  不是执行结果。改用 `IsWindowVisible` 判定真实状态。
+- **隐藏失败每帧重试**：加 `HIDE_RETRY_S = 0.5` 退避，不再每帧预绘制。
+- **正常退出会跳变**：退出前先把缩放归位到 1.0 并按 1:1 重绘，再
+  `SW_SHOW`，`EXIT_HOLD_S` 期间继续保留副本，之后才销毁窗口。
+- **隐藏期布局冻结**：音乐模式期间 explorer 的 UIA 快照不可信，恢复后
+  强制 `_needs_resync` 完整重同步。
+
+### Fixed — 资源与并发
+
+- **PIDL 泄漏**：`enum_desktop_items()` / `build_icon_cache()` /
+  `_desktop_pidl_map()` 全部改为 try/finally 所有权管理，枚举器、桌面
+  文件夹、`STRRET` 的 `pOleStr`、每个 `ILCombine` 结果都释放。
+- **多开互踩心跳**：新增 `SingleInstance`（`Local\JellyIcons.SingleInstance`
+  互斥体），第二个实例直接退出，不再覆盖/清除别人的心跳。
+- **重名图标串图**：`build_icon_cache()` 现在按 `name`、`name#1`、`name#2`
+  分键存各自位图；`_dedupe()` 的编号规则与它对齐（首个用原名）。
+  `_hit_test()` 与双击目标也改用唯一 key。
+- **双击目标不猜**：扩展名宽松匹配只在**唯一**命中时采用，重名不再乱开。
+- **音频流中断后一直"有音乐"**：回调记录 `_last_callback`，超过
+  `AUDIO_STALE_S = 0.5` 按静音处理；`is_active()` 为假则标记不可用，
+  主循环每 `AUDIO_RETRY_S = 2.0` 尝试重开设备。
+- **新图标不显示**：位图缺失时按 5 秒节流增量重载，新增/重命名无需重启。
+
+### Added
+
+- `jellyicons/single_instance.py`：单实例互斥。
+- `config.IDLE_FPS = 15`：真图标显示时降到 15 FPS（隐藏期仍 60）。
+- 缩放结果缓存 `_scaled_cache`（上限 512），`_calibrate_side()` 变化时清空。
+- `diagnose.py` 第 5 项从"名称交集"升级为**副本覆盖率报告**，直接告诉你
+  能不能安全隐藏真图标。
+- 测试从 47 项增到 **69 项**：`test_audio.py`（5）、`test_pidl.py`（5）、
+  `test_single_instance.py`（4），`test_music_mode.py` 增恢复失败/隐藏退避
+  用例，`test_app.py` 增覆盖率门槛用例。
+- `verify_hide.py`：真实 ListView 隐藏/恢复验证脚本，finally 保证恢复。
+
+### Changed
+
+- 删除从未使用的 `JELLY_MAX_H`、`LABEL_FADE_S`、`HOVER_SCALE`。
+- `smoke_v13.py` 增加覆盖率断言。
+- pyflakes 零告警。
+
+## [1.4.0] - 2026-11-01
+
+针对"动画幅度有点小"的量化排查与调参。先说结论：幅度确实偏小，
+横向几乎看不出来。
+
+### 量化（56px 图标，驱动真实 ActivityDetector + JellyState 模拟）
+
+| 场景 | v1.3 横向 | v1.3 纵向 | v1.4 横向 | v1.4 纵向 |
+|---|---|---|---|---|
+| 强低频（舞曲） | +2.9%，峰峰 0.9px | -8.9%，峰峰 4.0px | +16.1%，峰峰 4.2px | -18.8%，峰峰 6.1px |
+| 轻音乐 | +1.9%，峰峰 0.8px | -6.0%，峰峰 4.0px | +12.6%，峰峰 5.2px | -15.4%，峰峰 7.7px |
+| 持续无起伏音量 | pulse 恒 0，完全不动 | — | +16.1%，峰峰 4.2px | -18.8%，峰峰 6.1px |
+
+### Fixed
+- **横向拉伸几乎看不见**：`AGC_TO_VOL` 0.055 → 0.10。原来 pulse 峰值
+  只有 0.0297，仅用到壁纸 pulse 上限（0.055）的 54%。0.10 让 pulse
+  打到约 0.0377（68% 上限），保留衰减余量、不会每帧顶死。
+- **持续音量完全不动**：`process_pulse` 的 beat 判定要求音量跳升 10%，
+  平稳段落永远不触发。调高 `AGC_TO_VOL` 后 steady 场景也能动。
+- **bounce 抖动被吃掉一半**：原来 `scaleY += (sin(φ)-1)*amp` 恒带
+  `-amp` 偏置，等于把整条曲线下移半幅。改成 `scaleY -= |sin(φ)|*amp`
+  只在压缩侧打半波，幅度翻倍且 `sy>1` 帧数仍为 0。
+- **横向拉伸会裁边**：`CANVAS_MARGIN` 2 → 4，画布宽度改为按
+  `JELLY_MAX_W` 预留（不再用 `side + 2*margin`），本体右边缘不再被裁。
+
+### Added
+- `config.JELLY_GAIN_X = 4.2` / `config.JELLY_GAIN_Y = 1.8`：相对壁纸原版
+  的变形增益。横向天生不如纵向显眼（只变宽 vs 改变轮廓高度），
+  实测 X 需要比 Y 大得多的增益。
+- `config.JELLY_MAX_W = 1.35`：画布按理论上限预留本体最大横向放大。
+- `tests/test_app.py::test_canvas_fits_max_stretch`：最大拉伸时本体不得
+  超出画布（裁边回归）。
+- `tests/test_jelly.py::test_scale_bounds_pulse_cap` 增补两条断言：
+  实际峰值必须明显看得出在拉（横向 ≥ +8%），且理论上限不超过画布预留。
+
+### Changed
+- `tests/test_app.py::test_canvas_independent_of_scale` 扫描区间扩到
+  `0.88 ~ 1.22`，覆盖新的放大范围（原来只到 1.0825）。
+- `test_body_anchored_bottom_center` 改用 `config.CANVAS_MARGIN` 而非
+  硬编码 2，避免留白调整时假失败。
+- 单测 46 → 47 项。
+
+## [1.3.0] - 2026-11-01
+
+针对 v1.2.0 的三个反馈（"要播放一会儿才隐藏""隐藏后图标左右动"
+"切换不够连贯"）重做核心链路，并新增双击打开。
+
+### Added
+- **双击副本打开真实应用**（`jellyicons/click_open.py`）：
+  - 只读轮询：`GetAsyncKeyState(VK_LBUTTON)` 取按下沿 + `GetCursorPos`
+    + `GetDoubleClickTime`/`SM_CXDOUBLECLK`/`SM_CYDOUBLECLK` 判双击。
+    不装全局钩子，也不给 overlay 去掉 `WS_EX_TRANSPARENT` —— 后者会把
+    拖动/删除/框选/右键全部吃掉，是旧版踩过的坑。
+  - 打开方式实测取舍：`ShellExecuteExW + SEE_MASK_INVOKEIDLIST + lpIDList`
+    在本机恒返回 `ERROR_CANCELLED(1223)`，不可用；改用
+    `SHGetNameFromIDList(SIGDN_DESKTOPABSOLUTEPARSING)` 把 PIDL 转成
+    `::{GUID}`（此电脑/回收站/控制面板等虚拟项）或 `D:\path`
+    （文件系统项），再 `ShellExecuteW("open", name)`。
+  - 仅在音乐模式隐藏真图标期间启用。
+- `jellyicons/activity.py`：**音频活动度检测 + 逐频段 AGC**。
+  Wallpaper Engine 交给壁纸的 `audioData` 是它做过 AGC 的 64 段数据，
+  低频常年 0.3~1.0；我们原来除以"全频段最大峰值"，低频被中高频压到
+  中位数 0.011。现在每段各自跟踪峰值、慢衰减、再归一化。
+- `config.py` 新增 `AGC_*`/`ENV_*`/`LEVEL_WEIGHT`/`AGC_TO_VOL`/
+  `CANVAS_MARGIN`/`LABEL_GAP`/`EXIT_HOLD_S` 等常量。
+- `overlay.py` 新增 `hide()`。
+- `shell_icons.system_icon_font()`：读 `SPI_GETICONTITLELOGFONT` 拿系统
+  真实的图标标题字体（本机实测 `msyh.ttc` / 12px），标签不再猜字号。
+- `tests/test_activity.py`（11 项）；`smoke_v13.py` 端到端冒烟（真窗口 +
+  假快照 + 假音乐）。
+
+### Fixed
+- **隐藏后图标左右乱动**（根因：窗口 x 随 `sx` 变化）。
+  旧 `_origin()` 用 `x0 = cx - int(side*sx)//2`，`int()` 截断使窗口 x
+  随缩放抖 1~2px；而 hidden 态合成画布宽固定，两态基准不同还会横跳 8px。
+  现在每个图标一块**固定尺寸画布**（`_layout`），窗口 x/y 只由
+  `icon.rect` 与画布尺寸决定，与 `sx/sy` 完全无关。
+  `test_canvas_independent_of_scale` 锁死这条。
+- **Q 弹动画被跳帧逻辑吃掉**：画布尺寸固定后，`_last_state` 若只含
+  尺寸，缩放变化会被判"未变化"而跳过重绘。现在状态元组带上
+  `(qx, qy)`（`test_scale_change_forces_redraw` 锁死）。
+- **隐藏延迟好几秒**：旧判定要 `bass ≥ 0.03` 连续 0.75s，而旧 bass
+  中位数只有 0.011、仅 30% 采样过线。现在用 presence（包络 + AGC），
+  阈值 0.02 持续 0.15s → 播放到隐藏约 0.2 秒。
+- **切换闪空桌面**：隐藏前先 `_prime_before_hide()` 把副本按 1:1 画满，
+  再 `SW_HIDE`；恢复后保留副本 `EXIT_HOLD_S=0.12` 秒等 explorer 重绘
+  完成再撤。两帧都是零变化。
+- **AGC 底噪误触发音乐模式**：AGC 是相对增益，耳机底噪（~0.0005）会被
+  放大到 0.025 越过阈值。新增绝对噪声门 `AGC_GATE=0.0015`（实测很轻的
+  音乐低频是 0.00946，不会被误伤）。
+- **看门狗可能提前退出**：心跳文件原来截断重写，60fps 覆写时读端会读到
+  空文件 → 误判主进程已退出 → 强杀保护失效（实测 5 次轮询只有 1 次读到
+  内容）。改为 `.tmp` + `os.replace` 原子替换；读到空内容视为并发写入而
+  非退出。主进程心跳限频到 0.25s（状态变化时立即写）。
+- **音乐模式状态卡在 `init`**：启动时本来就静音的场景，`state` 一直停在
+  `STATE_INIT`。现在首个未达开阈值的帧直接落到 `STATE_SHOWN`。
+
+### Changed
+- `music_mode.feed(presence, now, allow_exit=True, before_enter=None)`：
+  入参语义从裸 bass 改为 presence；`allow_exit=False` 时只允许进入隐藏
+  （主循环用它做"等缩放回落到 1.0 再切回真图标"的闸门）；`before_enter`
+  在隐藏真图标**之前**执行预绘制。
+- 音乐模式阈值：开 `0.02` / 持续 `0.15s`，关 `0.008` / 持续 `1.0s`
+  （原来是 0.03/0.75s 与 0.015/3s）。
+- `audio_engine._compute_bands()` 不再做全局峰值归一化，返回原始幅度；
+  `bass_level()` 降级为兼容接口（只给日志用）。
+
+## [1.2.0] - 2026-10-31
+
+### Added
+- **音乐模式**：检测到音乐低频时，真实桌面图标自动隐藏，改由 overlay
+  绘制"图标本体 + 文字标签"的果冻副本；音乐停止 3 秒后自动恢复。
+  - 隐藏动作 = `ShowWindow(SysListView32, SW_HIDE)`，与 Windows 自带
+    "右键桌面 → 查看 → 显示桌面图标"开关操作的是同一个窗口，逐像素
+    一致、瞬时、完全可逆；不写注册表、不改窗口样式。
+  - 滞回判定（`config.py`）：开 = bass ≥ 0.03 持续 0.75s，
+    关 = bass ≤ 0.015 持续 3s，避免节拍间隙来回闪。
+  - `jellyicons/music_mode.py`：状态机 + 每次动作前重查句柄（explorer
+    重启后句柄会变）+ 恢复失败每帧重试。
+  - `jellyicons/watchdog.py`：心跳文件 `JellyIcons/.heartbeat.json`；
+    进程被强杀时，独立看门狗子进程（DETACHED_PROCESS）在 ~1s 内
+    检测失联并恢复图标显示。正常退出会删心跳文件，看门狗随之退出。
+  - 用户本来就把图标隐藏了（`HideIcons=1`）时音乐模式自动禁用，
+    不代用户做决定。
+  - 隐藏期间 overlay 补画文字标签（真标签随 ListView 一起消失），
+    标签不参与 Q 弹变形，与原生一致。
+- `[stat]` 健康行增加 `music=shown/hidden` 字段。
+
+### Fixed
+- `[stat]` 每 5 秒重置计时起点，导致 `elapsed` 永不增长、限时运行的
+  退出条件永不满足。
+- 图标本体位置按"格高 × 0.70"估算，随图标尺寸漂移；改为原生布局的
+  `格子顶 + ICON_TOP_PAD + 本体边长`，音乐模式下的文字标签不再溢出
+  到下一行格子。
+- 音乐模式禁用时状态机停在 `init` 而非 `shown`。
+
+## [1.1.0] - 2026-10-31
+
+### Added
+- `诊断.bat` / `python run.py --diagnose [秒]`：5 项链路自检（完整性、
+  音频、位图、UIA 布局、名称对齐），UIA 失败时转储 Progman→DefView→
+  ListView 窗口链。
+- `jellyicons/logutil.py`：控制台 + `JellyIcons.log` 双路日志，自动轮转
+  （1 MB × 3 备份）。
+- 主循环每 5 秒输出 `[stat]` 健康行（overlays/bass/scale/fps/redraw）。
+- `tests/test_app.py`：同步去重、消失移除、尺寸重校准、帧跳过共 4 项单测。
+- `requirements.txt`、`LICENSE`（MIT）、本 CHANGELOG。
+
+### Fixed
+- UIA 桌面列表定位改用 `FindWindow` 句柄链 + `ElementFromHandle`
+  （原 UIA 树遍历在真机上恒返回 0 项）。
+- `_sync_overlays` 二次同步 `move()` 参数笔误导致的崩溃。
+- 重名桌面项互串：同步 key 改为"重名加序号"的唯一下标。
+- DPI 感知缺失：创建窗口前 `SetProcessDpiAwareness(2)`，缩放屏不再错位。
+- 静音稳态每帧重绘全部窗口的 CPU 浪费：缩放差 < 0.001 整帧跳过。
+- 图标尺寸变化（改 DPI/图标大小）时自动重建缩放缓存。
+- `diagnose.py`：duration 缺省 TypeError、IntegrityError 路径
+  UnboundLocalError。
+
+## [1.0.0] - 2026-10-30
+
+首次交付。UIA 只读 + 全穿透 overlay 的干净架构；壁纸 3795008547 的
+processPulse/updateScale 逐行移植；WASAPI loopback 64 段对数频谱；
+9 项律动模型单测。
