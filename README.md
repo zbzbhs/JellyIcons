@@ -2,6 +2,13 @@
 
 [![status](https://img.shields.io/badge/status-beta-orange)](CHANGELOG.md)
 ![python](https://img.shields.io/badge/python-3.10%2B-blue)
+![platform](https://img.shields.io/badge/platform-Windows%2010%2F11-lightgrey)
+![license](https://img.shields.io/badge/license-MIT-green)
+
+![演示](docs/demo.gif)
+
+*（GIF 由 `docs/make_demo.py` 用真实图标位图 + 真实律动模型离线渲染，
+不是录屏；每一帧的形变就是程序实际会做的形变。）*
 
 把你 Wallpaper Engine 桌面壁纸的果冻律动，原样搬到桌面图标上：
 图标随音乐低频节拍 Q 弹拉伸（横向最大 +16%、纵向最大 -19%、底部中心锚点、果冻落地感），
@@ -17,6 +24,24 @@
 
 > 动力模型逐行移植自工坊壁纸 `431960/3795008547`（Dance Doll 系）的
 > `project.json` 实际参数，观感与壁纸本体一致。
+
+<details>
+<summary><b>English</b></summary>
+
+**JellyIcons** makes your Windows desktop icons bounce and squash with the
+music, the same jelly physics as the Wallpaper Engine wallpaper it was
+reverse-engineered from. Dragging, deleting, rubber-band selecting and
+right-clicking all keep working exactly as stock Windows.
+
+Each icon gets its own fully click-through layered window
+(`WS_EX_TRANSPARENT` + `HTTRANSPARENT`), so every mouse event still lands on
+the real icon underneath. Desktop layout is read through UI Automation
+(read-only — no cross-process memory writes, no registry writes, no global
+hooks). When music starts, the real icons step aside for the animated copies
+and come back when the music stops; while they are hidden, double-clicking a
+copy launches the app.
+
+</details>
 
 ## 为什么这个项目是安全的
 
