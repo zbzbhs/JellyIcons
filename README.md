@@ -14,13 +14,19 @@
 图标随音乐低频节拍 Q 弹拉伸（横向最大 +16%、纵向最大 -19%、底部中心锚点、果冻落地感），
 拖动 / 删除 / 框选 / 右键等一切桌面交互保持系统原生。
 
+**8 种动画模式 + 双引擎**：原位果冻（律动/音浪/烟花）与整版排版
+（自由/两年半/心动/海浪/星环）可以随时切换、自动轮换。两档都**一个字节
+都不写 explorer 的图标坐标**——位移的是我们自己的分层窗口，随时强杀
+都不会打乱桌面布局。
+
 音乐响起来时，真实图标会**自动让位**给会动的副本（连文字标签一起接管），
 音乐停止后**自动恢复**——用的是 Windows 自带"显示桌面图标"开关
 操作的那个窗口，随时可逆。切换是**无感**的：副本先按 1:1 画满屏幕，
 再让真图标消失，中间不会闪出一帧空桌面。
 
 副本显示期间，**双击某个图标即可打开对应应用**（只读轮询实现，
-不抢输入、不装钩子）。
+不抢输入、不装钩子）。控制面板（Tk）可以选音频设备、看实时波形、
+点模式按钮、开关自动轮换。
 
 > 动力模型逐行移植自工坊壁纸 `431960/3795008547`（Dance Doll 系）的
 > `project.json` 实际参数，观感与壁纸本体一致。
@@ -51,12 +57,14 @@ copy launches the app.
 | 事项 | JellyIcons 的做法 |
 |---|---|
 | 桌面图标数据 | **UI Automation 只读**（句柄链 + ElementFromHandle），零写入 |
+| 图标位置 | **零写入**。连"自由/两年半"这类整版排版，移动的也只是我们自己的分层窗口，explorer 的 `IconLayouts` 一个字节都不改 |
 | 真图标处理 | 平时**完全不碰**；音乐模式只切换其窗口可见性（等同系统开关） |
 | 注册表 | **零写入**（只读 `HideIcons` 判断你是否本来就隐藏了图标） |
 | 输入 | **无全局钩子**；overlay 窗口 `WS_EX_TRANSPARENT` + `HTTRANSPARENT` 全穿透 |
+| 全局热键 | `RegisterHotKey`（系统匹配、只收消息），**不用 `WH_KEYBOARD_LL`** |
 | 双击打开 | 只读轮询 `GetAsyncKeyState`+`GetCursorPos`，不注入、不拦截、不抢焦点 |
 | 拖动/删除/框选/右键 | **系统原生**，穿透层不挡任何事件 |
-| 退出 | 恢复图标显示 + 删心跳文件；强杀由独立看门狗 1 秒内自愈 |
+| 退出 | 副本先归位 1:1 → 恢复图标显示 → 删心跳文件；强杀由独立看门狗 1 秒内自愈 |
 
 原理：真桌面图标（SysListView32）之上悬浮每图标一个完全鼠标穿透的
 分层窗口，只负责画“会 Q 弹的图标副本”。因为窗口穿透，所有鼠标事件
@@ -110,6 +118,63 @@ v1.2 的窗口 x 是 `cx - int(side*sx)//2` 算的，`sx` 一变窗口就抖 1~2
 现在每个图标一块**固定尺寸画布**：窗口 x/y 只由图标格子矩形和画布尺寸
 决定，与缩放完全无关。`test_canvas_independent_of_scale` 锁死这条回归。
 
+## 8 种模式与双引擎
+
+模式分两档，用 `engine` 字段声明，同一套"预绘制→隐藏→归位→恢复"
+流程对两档通用：
+
+**`overlay` 原位层** —— 只缩放，**代码级禁止位移**（`Transform.clamp()`
+对 overlay 硬把 `dx/dy` 清 0）。图标永远待在自己格子里，不可能跑偏。
+
+| 模式 | 说明 |
+|---|---|
+| 律动 | 壁纸原版果冻：压扁回弹，底部中心锚点 |
+| 音浪 | 64 段频谱分 8 子带，按图标索引均匀绑带，各跳各的 |
+| 烟花 | 重拍触发，从屏幕中心向外的涟漪扩散（带距离延迟） |
+
+**`takeover` 接管层** —— 副本可位移、聚拢、绕圈、拼人形。关键区别：
+移动的是**我们自己的分层窗口**，不是 `SysListView32` 里的 item。所以
+explorer 的 `IconLayouts` 布局数据一个字节都不会被改写，退出时副本
+归位 1:1 再把真图标放回来——随时强杀都不打乱桌面。
+
+| 模式 | 说明 |
+|---|---|
+| 自由 | 随鼓点散开再聚拢，每个图标转速不同 |
+| 两年半 | 7 槽位拼小人运球（球有四阶段路径），桌面有腾讯会议图标就拿它当头部，跳满 12 秒一轮才下场 |
+| 心动 | 图标沿心形参数方程流动 |
+| 海浪 | 波峰错开、起伏沿横向传递 |
+| 星环 | 三层同心环，奇偶层反向旋转，按节奏舒展 |
+
+**自动轮换**：每模式停留 `dwell_s`（默认 10 秒）；`两年半` 设
+`dwell_s=None`，改为 `wants_exit()` 等一跳跳完。切换时有 0.2 秒形变
+过渡，音乐停下时 0.35 秒平滑归位——不留"突跳"。
+
+**一个模式崩了不影响别的**：`tick()` 抛异常只退化成静止，连续 3 次
+自动跳到下一个模式。
+
+## 控制面板与热键
+
+![控制面板](docs/panel.png)
+
+面板跑在独立 Tk 线程，所有交互只通过 `app.post()` 发消息、`app.snapshot()`
+读快照，绝不跨线程碰窗口或桌面：
+
+- 音频输出设备下拉（多声卡/虚拟声卡可选）
+- 64 段实时频谱（绿柱 + 黄色峰值）
+- 8 个模式按钮（当前模式高亮）、自动轮换开关、停止按钮
+- 状态行：模式 · 引擎 · 图标数 · 音乐状态 · fps
+
+热键（`RegisterHotKey`，独立消息线程，**不用全局低级钩子**——钩子会
+堵系统输入队列，早期版本真的把鼠标卡死过）：
+
+| 热键 | 作用 |
+|---|---|
+| `Ctrl+Alt+F9` | 退出 |
+| `Ctrl+Alt+→` / `Ctrl+Alt+←` | 下一个 / 上一个模式 |
+| `Ctrl+Alt+Space` | 自动轮换开关 |
+
+tkinter 缺失或被占用时，面板和热键都只记一条日志，主功能照常跑。
+
 ## 安装
 
 1. Windows 10/11，Python 3.10+ 加入 PATH
@@ -121,9 +186,10 @@ v1.2 的窗口 x 是 `cx - int(side*sx)//2` 算的，`sx` 一变窗口就抖 1~2
 - **启动**：双击 `启动.bat`（有控制台日志）或 `静默启动.vbs`（无窗口）
 - **播放音乐**，图标开始随低频节拍 Q 弹；音乐一响（约 0.2 秒）真图标
   自动隐藏，换成会动的副本，音乐停 1 秒后自动恢复
+- **切模式**：控制面板点按钮，或 `Ctrl+Alt+→/←`；自动轮换默认开
 - **双击副本图标** = 打开对应应用（音乐模式期间有效）
-- **关闭**：控制台 Ctrl+C / 关窗；静默模式任务管理器结束 python
-  （即使直接强杀，看门狗也会把图标恢复回来）
+- **关闭**：`Ctrl+Alt+F9` / 面板"停止" / 控制台 Ctrl+C / 关窗；
+  静默模式任务管理器结束 python（即使直接强杀，看门狗也会把图标恢复回来）
 - **只允许开一个**：v1.5.0 起有单实例互斥，第二个实例会直接退出
   （避免两个进程互相覆盖心跳、抢着隐藏/恢复图标）
 - **没效果**：先跑 `诊断.bat`（见下）
@@ -187,13 +253,15 @@ v1.2 的窗口 x 是 `cx - int(side*sx)//2` 算的，`sx` 一变窗口就抖 1~2
 ```
 run.py                  入口（--diagnose 诊断 / 数字秒做限时测试）
 启动.bat / 诊断.bat      一键启动 / 一键诊断
-静默启动.vbs            无控制台启动
+启动（无窗口）.bat       无控制台启动
+静默启动.vbs            无控制台启动（VBS 版）
 diagnose.py             诊断模式实现（5 项链路检查）
+run_tests.py            一键跑全部单测 + 冒烟
 jellyicons/
   __init__.py            版本号
-  config.py             壁纸参数 + 几何常量
+  config.py             壁纸参数 + 几何/模式常量
   jelly.py              壁纸 processPulse/updateScale 逐行移植
-  audio_engine.py       WASAPI loopback → 64 段对数频谱 → bass 能量
+  audio_engine.py       WASAPI loopback → 64 段对数频谱；设备枚举
   desktop_reader.py     UIA 只读布局（句柄链 + UIA 兜底，comtypes 缓存重定向）
   shell_icons.py        Shell API 取 256px 真 alpha 图标位图
   overlay.py            穿透分层窗口（UpdateLayeredWindow）
@@ -202,6 +270,20 @@ jellyicons/
   click_open.py         双击副本打开对应应用（只读轮询，无钩子）
   single_instance.py    单实例互斥（避免多开互踩心跳）
   watchdog.py           强杀自愈（独立子进程，心跳文件）
+  hotkey.py             RegisterHotKey 全局热键（不用低级钩子）
+  panel.py              Tk 控制面板（独立线程，post/snapshot 通信）
+  modes/
+    base.py             Transform / Mode / ModeContext + 引擎常量
+    util.py             approach / clamp / lerp / sustain
+    switcher.py         自动轮换 + 过渡 + 失败降级
+    jelly.py            律动        (overlay)
+    bands.py            音浪        (overlay)
+    firework.py         烟花        (overlay)
+    free.py             自由        (takeover)
+    kun.py              两年半      (takeover)
+    heart.py            心动        (takeover)
+    wave.py             海浪        (takeover)
+    ring.py             星环        (takeover)
   app.py                主循环（固定画布几何、无感切换、DPI 感知、跳帧）
   logutil.py            控制台+文件双路日志（轮转）
 tests/
@@ -212,6 +294,8 @@ tests/
   test_audio.py         音频回调过期/流中断/缓冲区清理（5 项）
   test_pidl.py          PIDL 释放/身份映射/重名不猜（5 项）
   test_single_instance.py 互斥体获取/释放（4 项）
+  test_modes.py         8 模式有界性/引擎契约/切换器/失败降级（26 项）
+  test_hotkey.py        热键绑定表/无钩子守卫/注册往返（10 项）
 verify_hide.py          真实 ListView 隐藏/恢复验证（finally 保证恢复）
 smoke_v13.py            端到端冒烟（真窗口 + 假快照 + 假音乐）
 make_launchers.py       重新生成启动脚本
@@ -222,18 +306,11 @@ LICENSE                 MIT
 ## 测试
 
 ```
-python -X utf8 tests/test_jelly.py
-python -X utf8 tests/test_app.py
-python -X utf8 tests/test_activity.py
-python -X utf8 tests/test_music_mode.py
-python -X utf8 tests/test_audio.py
-python -X utf8 tests/test_pidl.py
-python -X utf8 tests/test_single_instance.py
-python -X utf8 smoke_v13.py
+python -X utf8 run_tests.py
 ```
 
-共 69 项单测 + 1 个端到端冒烟，全部不依赖真实桌面。想验真实隐藏/恢复，
-另跑 `python -X utf8 verify_hide.py`（内部 finally 保证恢复）。
+共 **105 项单测 + 1 个端到端冒烟**，全部不依赖真实桌面。想验真实
+隐藏/恢复，另跑 `python -X utf8 verify_hide.py`（内部 finally 保证恢复）。
 
 （不能 `python -m unittest tests.test_jelly`——venv 里 ultralytics 的
 `tests` 包会遮蔽我们的包名，属环境问题非代码问题。）
@@ -247,6 +324,8 @@ python -X utf8 smoke_v13.py
 - 音乐模式隐藏期间，桌面上暂不响应"框选/右键"等针对真图标的操作
   （真图标窗口被隐藏了）；音乐一停立刻恢复。用键盘/其他方式无影响
 - 双击打开只在音乐模式期间生效（正常模式真图标自己处理双击）
+- `takeover` 模式的位移是相对图标格子的，图标被拖到屏幕边缘时
+  有部分会移出可视区（`Transform.clamp` 只夹缩放，不夹屏幕边界）
 
 ## License
 

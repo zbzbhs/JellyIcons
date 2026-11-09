@@ -135,3 +135,11 @@ LABEL_GAP = 2             # 本体底边到标签顶部的间距
 JELLY_MAX_W = 1.35
 # 纵向只压扁（scaleY ≤ 1），画布高度不需要额外预留：
 # h = 2*margin + side + (LABEL_GAP + label_h)
+
+# ---- 动画模式（双引擎）----
+# 每种模式用 engine 字段声明自己属于哪一档：
+#   overlay   原位果冻，只缩放不位移（最稳，永不错位）
+#   takeover  副本接管，可以聚拢/绕圈/拼人形（位移的是我们自己的窗口，
+#             绝不写 explorer 的图标坐标，退出必归位）
+DEFAULT_MODE = "jelly"
+AUTO_SWITCH = True        # 自动轮换（每种模式 dwell_s 秒；两年半跳完一轮才切）

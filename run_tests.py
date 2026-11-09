@@ -19,6 +19,8 @@ TARGETS = [
     "tests/test_audio.py",
     "tests/test_pidl.py",
     "tests/test_single_instance.py",
+    "tests/test_modes.py",
+    "tests/test_hotkey.py",
     "smoke_v13.py",
 ]
 
@@ -41,7 +43,8 @@ def main():
         for rel in failed:
             print("  -", rel)
         return 1
-    print("[OK] 全部通过（7 个单测文件 + 1 个端到端冒烟）")
+    print("[OK] 全部通过（%d 个单测文件 + 1 个端到端冒烟）"
+          % (len(TARGETS) - 1))
     return 0
 
 

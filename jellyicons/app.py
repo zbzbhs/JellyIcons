@@ -24,13 +24,19 @@ from __future__ import annotations
 import ctypes
 import math
 import os
+import queue
 import subprocess
 import sys
 import time
 
 from . import click_open, config, jelly, shell_icons
+from . import audio_engine
 from .activity import ActivityDetector
 from .audio_engine import AudioEngine
+from . import hotkey as hotkey_mod
+from . import panel as panel_mod
+from .modes import BY_NAME, ModeContext, Transform
+from .modes.switcher import ModeSwitcher
 from .desktop_reader import DesktopReader, IntegrityError
 from .logutil import get_logger, new_session, log_path
 from .music_mode import MusicMode, STATE_HIDDEN
@@ -115,6 +121,7 @@ class App:
         self._label_font_px = None
         self._label_cache = {}
         self._scaled_cache = {}    # (id(img), w, h) -> 缩放副本
+        self._alpha_cache = {}     # (id(canvas), alpha, size) -> 半透明副本
         # ---- 音乐模式 ----
         self.music_mode = MusicMode(enabled=not _user_hides_icons())
         self._watchdog_proc = None
@@ -128,6 +135,27 @@ class App:
         self._needs_resync = True
         self._single_instance = SingleInstance()
         self._next_audio_retry = 0.0
+        # ---- 面板 / 热键（跨线程只通过 queue + 不可变快照通信） ----
+        # 面板绝不直接碰 overlay 或桌面：它 post 意图、读快照。
+        self._commands = queue.Queue()
+        self._snap = None
+        self.panel = None
+        self.hotkeys = None
+        self.devices = []
+        self.mode_list = []
+        self.hotkey_hints = []
+        self.auto_switch = config.AUTO_SWITCH
+        self._quit_requested = False
+        # ---- 动画模式（双引擎） ----
+        # switcher 决定"这一刻由哪个模式说话"；transforms 是本帧每个图标的
+        # 形变；engine 决定这一档允不允许位移（overlay 恒 0）。
+        self.switcher = ModeSwitcher(start=config.DEFAULT_MODE,
+                                     auto=config.AUTO_SWITCH)
+        self._transforms = {}
+        self._engine = None  # None = 还没跑过一帧（避免误报 overlay→overlay）
+        self._screen = None        # (w, h)
+        self._mode_label = self.switcher.name
+        self._tf_sig = None        # 上一帧的形变签名（跳帧用）
 
     # ---- 图标源 ----
 
@@ -383,11 +411,14 @@ class App:
         self._scaled_cache[key] = scaled
         return scaled
 
-    def _compose(self, entry, sx, sy):
+    def _compose(self, entry, sx, sy, dx=0.0, dy=0.0, alpha=1.0):
         """把缩放本体 + 标签画进固定尺寸画布，返回 (canvas, x, y)。
 
-        画布尺寸固定 ⇒ 窗口坐标固定 ⇒ 横向绝不漂移。
+        画布尺寸固定 ⇒ overlay 引擎下窗口坐标固定 ⇒ 横向绝不漂移。
         缩放锚点 = 本体槽位底部中心（对应 CSS transform-origin:center bottom）。
+
+        位移只在 takeover 引擎出现：真图标已被隐藏，副本窗口直接挪到
+        geom 基准 + (dx, dy)，挪的是我们自己的窗口，不动 explorer 的坐标。
         """
         geom = entry["geom"]
         img = self._icon_for(entry.get("key", entry["icon"].name),
@@ -406,28 +437,64 @@ class App:
         if label is not None and geom["label_y"] is not None:
             lx = (geom["w"] - label.size[0]) // 2
             canvas.paste(label, (lx, geom["label_y"]), label)
-        return canvas, geom["x"], geom["y"]
 
-    def _draw_all(self, hidden, sx, sy):
-        """按当前模式绘制全部图标。返回重绘个数。"""
+        if alpha < 0.999:
+            # 淡入淡出：只改 alpha 通道，颜色保持（premultiplied 由
+            # UpdateLayeredWindow 负责，overlay.py 已经乘过 alpha）
+            canvas = self._apply_alpha(canvas, alpha)
+        return (canvas,
+                geom["x"] + int(round(dx)),
+                geom["y"] + int(round(dy)))
+
+    def _apply_alpha(self, canvas, alpha):
+        """按 alpha 缩放整块画布的透明度（带缓存，只在切换时用到）。"""
+        qa = round(max(0.0, min(1.0, alpha)), 2)
+        if qa >= 0.999:
+            return canvas
+        key = (id(canvas), qa, canvas.size)
+        cached = self._alpha_cache.get(key)
+        if cached is not None:
+            return cached
+        a = canvas.getchannel("A").point(lambda v: int(v * qa))
+        out = canvas.copy()
+        out.putalpha(a)
+        if len(self._alpha_cache) > 64:
+            self._alpha_cache.clear()
+        self._alpha_cache[key] = out
+        return out
+
+    def _draw_all(self, hidden, sx, sy, transforms=None):
+        """按当前模式绘制全部图标。返回重绘个数。
+
+        transforms 为 {key: Transform} 时按每个图标各自的形变绘制
+        （模式接管）；为 None 时全部用统一的 (sx, sy)（律动模式）。
+        """
         drawn = 0
-        # 画布尺寸固定（这是不横移的前提），所以"内容变没变"不能只看尺寸，
-        # 必须把缩放值也带进状态里 —— 否则 Q 弹动画会被跳帧逻辑整个吃掉。
-        qx = round(sx, 3)
-        qy = round(sy, 3)
         for entry in self.overlays.values():
             try:
                 if hidden:
-                    made = self._compose(entry, sx, sy)
+                    tf = None
+                    if transforms is not None:
+                        tf = transforms.get(entry["key"])
+                    if tf is None:
+                        tf = Transform(sx, sy)
+                    made = self._compose(entry, tf.sx, tf.sy,
+                                         tf.dx, tf.dy, tf.alpha)
                     if made is None:
                         continue
                     canvas, x, y = made
-                    state = (x, y, canvas.size, qx, qy)
+                    # 画布尺寸固定（这是不横移的前提），"内容变没变"必须把
+                    # 缩放/位移/透明度一起带进状态 —— 否则动画会被跳帧吃掉。
+                    state = (x, y, canvas.size,
+                             round(tf.sx, 3), round(tf.sy, 3),
+                             round(tf.dx, 2), round(tf.dy, 2),
+                             round(tf.alpha, 3))
                     if (not entry.get("dirty")
                             and entry.get("_last_state") == state):
                         continue
                     entry["win"].draw(canvas, x, y)
                     entry["_last_state"] = state
+                    entry["_last_tf"] = tf
                     entry["dirty"] = False
                     entry["ready"] = True
                     drawn += 1
@@ -436,14 +503,20 @@ class App:
                     if entry.get("_last_state") is not None:
                         entry["win"].hide()
                         entry["_last_state"] = None
+                        entry["_last_tf"] = None
                         entry["dirty"] = True
             except Exception as exc:
                 entry["ready"] = False
                 log.warning("[draw] 绘制失败: %r", exc)
         return drawn
 
-    def _prime_before_hide(self, sx, sy) -> bool:
-        """预绘制并检查覆盖率；任何缺口都保留真实图标。"""
+    def _prime_before_hide(self, sx, sy, transforms=None) -> bool:
+        """预绘制并检查覆盖率；任何缺口都保留真实图标。
+
+        transforms 不为空时按模式给出的逐图标形变预绘制——切换模式的
+        那一刻，takeover 的位移必须一并在隐藏之前画好，否则真图标一
+        消失就会看到图标先跳到新位置再动。
+        """
         if (not self._has_snapshot or not self._desktop_keys
                 or set(self._desktop_keys) != set(self.overlays)
                 or len(self.overlays) != len(self._desktop_keys)):
@@ -452,7 +525,7 @@ class App:
         for entry in self.overlays.values():
             entry["dirty"] = True
             entry["ready"] = False
-        self._draw_all(True, sx, sy)
+        self._draw_all(True, sx, sy, transforms)
         if not all(entry.get("ready", False)
                    for entry in self.overlays.values()):
             log.warning("[music] 副本绘制未全部成功，保留真实图标")
@@ -473,7 +546,107 @@ class App:
             entry["dirty"] = True
         return True
 
+    # ---- 面板/热键接口（线程安全） ----
+
+    def post(self, command):
+        """任何线程都可以提交一个意图；主循环下一帧执行。"""
+        try:
+            self._commands.put_nowait(command)
+        except Exception:
+            pass
+
+    def snapshot(self):
+        """面板读取的不可变快照（主循环每帧刷新）。"""
+        return self._snap
+
+    def _publish(self, **fields):
+        base = self._snap or {}
+        base.update(fields)
+        self._snap = base
+
+    def _drain_commands(self, now):
+        """在主循环里执行面板/热键交来的命令。只在这里改状态。"""
+        while True:
+            try:
+                cmd = self._commands.get_nowait()
+            except queue.Empty:
+                return
+            kind = cmd.get("type")
+            try:
+                if kind == "quit":
+                    self._quit_requested = True
+                elif kind == "select_mode":
+                    name = cmd.get("name")
+                    if name and self.switcher.select(name):
+                        log.info("[mode] 手动切到 %s（%s）",
+                                 name, self.switcher.title)
+                        self.switcher.set_auto(self.auto_switch)
+                        self._reset_transforms()
+                elif kind == "next_mode":
+                    if self.switcher.next():
+                        log.info("[mode] 下一个 → %s", self.switcher.title)
+                        self._reset_transforms()
+                elif kind == "prev_mode":
+                    if self.switcher.prev():
+                        log.info("[mode] 上一个 → %s", self.switcher.title)
+                        self._reset_transforms()
+                elif kind == "set_auto":
+                    self.auto_switch = bool(cmd.get("value"))
+                    self.switcher.set_auto(self.auto_switch)
+                    log.info("[mode] 自动轮换 %s",
+                             "开" if self.auto_switch else "关")
+                elif kind == "toggle_auto":
+                    self.auto_switch = not self.auto_switch
+                    self.switcher.set_auto(self.auto_switch)
+                    log.info("[mode] 自动轮换 %s",
+                             "开" if self.auto_switch else "关")
+                elif kind == "device":
+                    self._switch_device(cmd.get("index"))
+            except Exception as exc:
+                log.warning("[cmd] %r 执行失败: %r", cmd, exc)
+
+    def _reset_transforms(self):
+        """切模式后强制重绘一帧（形变签名和 dirty 都要失效）。"""
+        self._tf_sig = None
+        for entry in self.overlays.values():
+            entry["dirty"] = True
+
+    def _switch_device(self, index):
+        """换音频输出设备：重开 loopback，不动其他任何状态。"""
+        if index is None:
+            return
+        log.info("[audio] 切换到设备 #%s", index)
+        try:
+            self.audio.close()
+        except Exception:
+            pass
+        self.audio.device_index = int(index)
+        if self.audio.open():
+            log.info("[audio] 已切换到 %s %dHz", self.audio.device_name,
+                     self.audio.rate)
+        else:
+            log.warning("[audio] 切换失败，2 秒后按默认设备重试")
+            self.audio.device_index = None
+            self._next_audio_retry = 0.0
+
     # ---- 双击打开 ----
+
+    def _screen_size(self):
+        """主屏尺寸（取过一次就缓存）。takeover 模式按它算中心/半径。"""
+        if self._screen is None:
+            u = ctypes.windll.user32
+            u.GetSystemMetrics.argtypes = [ctypes.c_int]
+            u.GetSystemMetrics.restype = ctypes.c_int
+            self._screen = (u.GetSystemMetrics(0), u.GetSystemMetrics(1))
+        return self._screen
+
+    @staticmethod
+    def _all_rest(transforms):
+        """所有图标是否都已归位（takeover 模式的退出闸门）。"""
+        for tf in transforms.values():
+            if not tf.is_rest(eps=REST_SCALE_EPS):
+                return False
+        return True
 
     def _hit_test(self, x, y):
         """屏幕坐标落在哪个图标的格子里 → 返回该副本的唯一 key。"""
@@ -499,6 +672,12 @@ class App:
 
         if not self.audio.open():
             log.warning("[audio] 无音频输入，动画按静音处理")
+
+        # 面板要用的只读清单：设备、模式（第一次取，之后不重建）
+        self.devices = audio_engine.list_loopback_devices()
+        self.mode_list = [(name, BY_NAME[name].title, BY_NAME[name].engine)
+                          for name in self.switcher.order]
+        self._start_aux()
 
         self._load_icons()
         if not self._sync_overlays():
@@ -528,6 +707,11 @@ class App:
             elapsed = now - start
             if duration is not None and elapsed > duration:
                 break
+            # 面板/热键交来的意图只在这里落地（唯一改状态的地方）
+            self._drain_commands(now)
+            if self._quit_requested:
+                log.info("[main] 收到退出请求")
+                break
             dt = max(1e-4, min(0.25, now - last_frame))
             last_frame = now
 
@@ -538,14 +722,46 @@ class App:
             # 否则 pulse 恒饱和，形变永远是最大值
             sx, sy = self.jelly.step(bass * config.AGC_TO_VOL)
 
+            # 模式：由 switcher 决定这一刻谁说话。transforms 是逐图标的形变，
+            # engine 决定这一档允不允许位移（overlay 恒 0）。
+            ctx = ModeContext(
+                icons=[(key, entry["icon"])
+                       for key, entry in self.overlays.items()],
+                bands=bands, bass=bass, presence=presence,
+                jelly=self.jelly, screen=self._screen_size(), now=now)
+            transforms, engine, blend = self.switcher.tick(
+                ctx, dt, active=presence >= config.MUSIC_ON_THRESHOLD)
+            # 按引擎规整：overlay 档强制丢弃位移，缩放夹在画布预留范围内
+            max_w = config.JELLY_MAX_W
+            transforms = {key: tf.clamp(engine, max_w, 0.45)
+                          for key, tf in transforms.items()}
+            self._transforms = transforms
+            if engine != self._engine:
+                if self._engine is not None:
+                    log.info("[mode] 引擎 %s -> %s（%s）",
+                             self._engine, engine, self.switcher.title)
+                else:
+                    log.info("[mode] 起始模式 %s（引擎 %s）",
+                             self.switcher.title, engine)
+                self._engine = engine
+                for entry in self.overlays.values():
+                    entry["dirty"] = True
+            # 律动状态本身只用于日志与 at_rest 闸门的兜底；
+            # 真正的形变由当前模式给出的 transforms 决定。
+            if transforms:
+                sx = sum(tf.sx for tf in transforms.values()) / len(transforms)
+                sy = sum(tf.sy for tf in transforms.values()) / len(transforms)
+
             # 音乐模式：presence 判定（包络平滑过，不再受节拍间隙影响）
-            # 退出闸门：缩放必须先回落到 1.0，否则把真图标显示出来的
-            # 那一帧会看到一下跳变（副本还在形变中）。
+            # 退出闸门：所有图标必须先归位，否则把真图标显示出来的那一帧
+            # 会看到一下跳变（副本还在形变/位移中）。
             at_rest = (abs(sx - 1.0) < REST_SCALE_EPS
-                       and abs(sy - 1.0) < REST_SCALE_EPS)
+                       and abs(sy - 1.0) < REST_SCALE_EPS
+                       and self._all_rest(transforms))
             self.music_mode.feed(
                 presence, time.time(), allow_exit=at_rest,
-                before_enter=lambda: self._prime_before_hide(sx, sy))
+                before_enter=lambda: self._prime_before_hide(
+                    sx, sy, self._transforms))
             hidden = self.music_mode.state == STATE_HIDDEN
             # 心跳限频：看门狗的失联阈值是 1.5s，没必要 60fps 写文件
             # （高频覆写会让看门狗读到半截文件）。状态变化时立即写。
@@ -571,10 +787,16 @@ class App:
                 self._sync_overlays()
 
             if hidden:
-                if (abs(sx - self._last_sx) >= SCALE_EPS
-                        or abs(sy - self._last_sy) >= SCALE_EPS
+                # 用形变签名判断要不要重绘：takeover 模式每帧都有位移，
+                # 逐项比较 sx/sy 不够用；签名比整帧 compose 便宜得多。
+                sig = tuple(sorted(
+                    (key, round(tf.sx, 3), round(tf.sy, 3),
+                     round(tf.dx, 1), round(tf.dy, 1), round(tf.alpha, 2))
+                    for key, tf in transforms.items()))
+                if (sig != self._tf_sig
                         or any(e.get("dirty") for e in self.overlays.values())):
-                    drawn += self._draw_all(True, sx, sy)
+                    drawn += self._draw_all(True, sx, sy, transforms)
+                    self._tf_sig = sig
                     self._last_sx, self._last_sy = sx, sy
             else:
                 # 退出音乐模式：explorer 刚收到 SW_SHOW，重绘要一小会儿。
@@ -587,6 +809,17 @@ class App:
 
             if hidden:
                 self._watcher.poll(now)
+
+            # 面板读的快照：整份不可变，面板线程只读
+            self._publish(
+                bands=[float(v) for v in bands],
+                bass=float(bass), presence=float(presence),
+                mode=self.switcher.name, mode_title=self.switcher.title,
+                engine=engine, blend=float(blend),
+                hidden=bool(hidden), icons=len(self.overlays),
+                fps=float(current_fps), auto=bool(self.auto_switch),
+                device=self.audio.device_name,
+                audio_ok=bool(self.audio.available))
 
             spent = time.perf_counter() - now
             sleep = frame_time - spent
@@ -610,6 +843,46 @@ class App:
         log.info("[main] 退出，清理 overlay 窗口")
         self.close()
 
+    # ---- 面板 / 热键启动 ----
+
+    def _start_aux(self):
+        """拉起热键监听与控制面板。任何一个失败都不影响动画主循环。"""
+        # 热键
+        try:
+            self.hotkeys = hotkey_mod.HotkeyListener()
+            self.hotkeys.bind("quit", lambda: self.post({"type": "quit"}))
+            self.hotkeys.bind("next", lambda: self.post({"type": "next_mode"}))
+            self.hotkeys.bind("prev", lambda: self.post({"type": "prev_mode"}))
+            self.hotkeys.bind("toggle_auto",
+                              lambda: self.post({"type": "toggle_auto"}))
+            self.hotkeys.start()
+            self.hotkey_hints = self.hotkeys.describe()
+        except Exception as exc:
+            log.warning("[hotkey] 初始化失败（不影响动画）: %r", exc)
+            self.hotkeys = None
+
+        # 面板
+        try:
+            self.panel = panel_mod.ControlPanel(self)
+            self.panel.start()
+        except Exception as exc:
+            log.warning("[panel] 启动失败（不影响动画）: %r", exc)
+            self.panel = None
+
+    def _stop_aux(self):
+        if self.hotkeys is not None:
+            try:
+                self.hotkeys.stop()
+            except Exception:
+                pass
+            self.hotkeys = None
+        if self.panel is not None:
+            try:
+                self.panel.stop()
+            except Exception:
+                pass
+            self.panel = None
+
     # ---- 看门狗 ----
 
     def _start_watchdog(self):
@@ -631,6 +904,9 @@ class App:
     def close(self):
         # 正常退出也走无感路径：归位、1:1 重绘、恢复真图标、短暂保留副本。
         self._running = False
+        # 先停面板和热键：面板关闭会再 post 一次 quit，热键线程也该归零，
+        # 否则退出后 Ctrl+Alt+方向键仍然被我们吃掉。
+        self._stop_aux()
         restored = True
         was_hidden = self.music_mode.state == STATE_HIDDEN
         try:

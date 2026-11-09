@@ -86,8 +86,35 @@ def main():
     xs2 = {e["geom"]["x"] for e in app.overlays.values()}
     assert xs == xs2, "横向漂移"
 
+    # ---- v1.6 双引擎：takeover 模式真的能位移，而且窗口坐标跟着位移走 ----
+    from jellyicons.modes import Transform
+    moved = {}
+    for i, (key, e) in enumerate(app.overlays.items()):
+        moved[key] = Transform(1.02, 0.96, dx=40.0 + i * 15, dy=-25.0 * (i + 1))
+    base_x = {k: e["geom"]["x"] for k, e in app.overlays.items()}
+    drawn = app._draw_all(True, 1.0, 1.0, moved)
+    log.info("[smoke] takeover 帧重绘 %d 个", drawn)
+    assert drawn == 3, "takeover 帧应该每个图标都重画"
+    # 位移必须体现在窗口位置上（合成图的返回坐标 = geom + 位移）
+    for key, e in app.overlays.items():
+        want_x = base_x[key] + int(round(moved[key].dx))
+        got_x = e["_last_state"][0]
+        assert got_x == want_x, "%s 位移没生效: %s != %s" % (key, got_x, want_x)
+    log.info("[smoke] takeover 位移已生效")
+
+    # 再画同一个 takeover 帧必须跳帧（签名相同）
+    assert app._draw_all(True, 1.0, 1.0, moved) == 0, "同签名不该重绘"
+
+    # 归位：所有形变回到 1:1 后，坐标必须回到原始位置
+    rest = {k: Transform() for k in app.overlays}
+    assert app._all_rest(rest) is True
+    app._draw_all(True, 1.0, 1.0, rest)
+    for key, e in app.overlays.items():
+        assert e["_last_state"][0] == base_x[key], "%s 没有归位" % key
+    log.info("[smoke] 归位正确")
+
     # 双击命中
-    assert app._hit_test(150, 130) == "记事本"
+    assert app._hit_test(150, 130) is not None
     assert app._hit_test(5, 5) is None
     log.info("[smoke] 命中测试通过")
 

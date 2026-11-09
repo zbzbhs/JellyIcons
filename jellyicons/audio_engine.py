@@ -37,8 +37,47 @@ F_MIN = 20.0
 F_MAX = 16000.0
 
 
+def list_loopback_devices():
+    """列出可用的 WASAPI loopback 设备（即"扬声器/耳机"）。
+
+    返回 [{"index": int, "name": str, "rate": int, "channels": int,
+           "default": bool}, ...]；枚举失败返回 []。
+    只读枚举，不改系统设置。
+    """
+    if pa is None:
+        return []
+    out = []
+    p = None
+    try:
+        p = pa.PyAudio()
+        wasapi = p.get_host_api_info_by_type(pa.paWASAPI)
+        default_index = wasapi["defaultOutputDevice"]
+        default_name = ""
+        try:
+            default_name = p.get_device_info_by_index(default_index)["name"]
+        except Exception:
+            pass
+        for d in p.get_loopback_device_info_generator():
+            out.append({
+                "index": int(d["index"]),
+                "name": str(d["name"]),
+                "rate": int(d["defaultSampleRate"]),
+                "channels": int(d["maxInputChannels"]),
+                "default": bool(default_name and default_name in d["name"]),
+            })
+    except Exception:
+        return []
+    finally:
+        if p is not None:
+            try:
+                p.terminate()
+            except Exception:
+                pass
+    return out
+
+
 class AudioEngine(object):
-    def __init__(self, block=2048):
+    def __init__(self, block=2048, device_index=None):
         self.block = block
         self.rate = 48000
         self._pa = None
@@ -47,6 +86,8 @@ class AudioEngine(object):
         self._lock = threading.Lock()
         self.available = False
         self.device_name = ""
+        #: None = 跟随系统默认输出设备
+        self.device_index = device_index
         self._bands = np.zeros(NUM_BANDS, dtype=np.float32)
         self._band_map = None
         self._peak = 0.05
@@ -57,17 +98,20 @@ class AudioEngine(object):
 
     def _pick_loopback(self):
         p = pa.PyAudio()
-        wasapi = p.get_host_api_info_by_type(pa.paWASAPI)
-        out = p.get_device_info_by_index(wasapi["defaultOutputDevice"])
-        target = None
-        for d in p.get_loopback_device_info_generator():
-            if out["name"] in d["name"]:
-                target = d
-                break
-        if target is None:
+        try:
+            if self.device_index is not None:
+                dev = p.get_device_info_by_index(int(self.device_index))
+                return p, dev
+            wasapi = p.get_host_api_info_by_type(pa.paWASAPI)
+            out = p.get_device_info_by_index(wasapi["defaultOutputDevice"])
+            for d in p.get_loopback_device_info_generator():
+                if out["name"] in d["name"]:
+                    return p, d
+        except Exception:
             p.terminate()
-            return None, None
-        return p, target
+            raise
+        p.terminate()
+        return None, None
 
     def open(self):
         if pa is None:

@@ -32,7 +32,7 @@ jobs:
       - name: Lint (pyflakes)
         # 必须用 bash：pwsh 不展开 glob，python -m pyflakes *.py 会拿到字面量
         shell: bash
-        run: python -m pyflakes jellyicons/*.py *.py tests/*.py
+        run: python -m pyflakes jellyicons/*.py jellyicons/modes/*.py *.py tests/*.py
 
       - name: Unit tests + smoke
         run: python -X utf8 run_tests.py
@@ -51,7 +51,7 @@ jobs:
       - name: Launcher scripts are GBK-encoded (cmd parses them as GBK)
         shell: pwsh
         run: |
-          foreach ($f in @("启动.bat", "诊断.bat")) {
+          foreach ($f in @("启动.bat", "诊断.bat", "启动（无窗口）.bat")) {
             $bytes = [System.IO.File]::ReadAllBytes($f)
             # 0xEF 0xBB 0xBF 是 UTF-8 BOM；出现就说明又被编辑器存成 UTF-8 了
             if ($bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB) {
@@ -64,4 +64,4 @@ jobs:
           }
           Write-Host "launcher encoding OK"
       - name: Imports resolve
-        run: python -c "import jellyicons.app, jellyicons.audio_engine, jellyicons.overlay; print('imports OK')"
+        run: python -c "import jellyicons.app, jellyicons.audio_engine, jellyicons.overlay, jellyicons.panel, jellyicons.hotkey, jellyicons.modes; print('imports OK')"

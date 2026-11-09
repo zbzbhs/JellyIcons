@@ -2,6 +2,76 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/)。
 
+## [1.6.0] - 2026-11-09
+
+从"一个效果"变成"一套效果系统"。核心是**双引擎**：同一份桌面、同一份
+音频，可以走两条完全不同的动画路径，模式自己声明属于哪一档。
+
+### Added — 双引擎
+
+- `jellyicons/modes/base.py`：`Transform`（sx/sy/dx/dy/alpha）+
+  `blended(k)` + `clamp(engine)`；`Mode` / `ModeContext` 接口。
+- **`overlay` 引擎**：只缩放、绝不位移。`clamp()` 对 overlay 硬性把
+  `dx=dy=0`、`alpha=1`，代码级保证"图标永远待在自己格子里"。
+- **`takeover` 引擎**：副本可以位移、聚拢、绕圈、拼人形。关键：移动的是
+  我们自己的分层窗口，**一个字节都不写 explorer 的图标坐标**，退出时
+  副本归位 1:1 再把真图标放回来。所以随时强杀都不会打乱桌面布局
+  （这是与把 `LVM_SETITEMPOSITION` 写进 `IconLayouts` 的方案的本质区别）。
+
+### Added — 8 种模式
+
+| 模式 | 引擎 | 说明 |
+|---|---|---|
+| 律动 `jelly` | overlay | 壁纸原版果冻：压扁回弹 |
+| 音浪 `bands` | overlay | 64 段频谱分 8 子带，各图标各跳各的 |
+| 烟花 `firework` | overlay | 重拍触发从屏幕中心扩散的涟漪 |
+| 自由 `free` | takeover | 随鼓点散开再聚拢 |
+| 两年半 `kun` | takeover | 7 槽位拼小人运球，跳满 12 秒一轮才下场 |
+| 心动 `heart` | takeover | 图标沿心形参数方程流动 |
+| 海浪 `wave` | takeover | 波峰错开、起伏传递 |
+| 星环 `ring` | takeover | 三层同心环奇偶反向旋转 |
+
+### Added — 切换器与收敛
+
+- `jellyicons/modes/switcher.py`：自动轮换（每模式 `dwell_s` 停留，
+  `kun` 用 `wants_exit()` 等跳完一轮）、手动上/下一个、`BLEND_S=0.20`
+  过渡、`WIND_DOWN_S=0.35` 音乐停下时的平滑归位。
+- **失败降级**：某个模式的 `tick()` 抛异常时只退化成静止，连续 3 次
+  自动跳过该模式——一个模式的 bug 不能拖垮整个程序。
+
+### Added — 控制面板与热键
+
+- `jellyicons/panel.py`：Tk 控制面板（独立线程）。音频设备下拉、64 段
+  实时波形（含峰值线）、8 个模式按钮、自动轮换开关、停止按钮、状态行。
+  所有交互只 `app.post()` 消息 + `app.snapshot()` 读快照，绝不跨线程
+  碰窗口或桌面。tkinter 缺失时静默降级为无面板运行。
+- `jellyicons/hotkey.py`：`RegisterHotKey` + 独立消息线程。
+  `Ctrl+Alt+F9` 退出、`Ctrl+Alt+→/←` 上/下一个模式、`Ctrl+Alt+Space`
+  自动轮换开关。**绝不用 `WH_KEYBOARD_LL`**——低级钩子会堵住系统输入
+  队列（历史上真的把鼠标卡死过），`test_no_low_level_hook` 锁死这条。
+- `audio_engine.list_loopback_devices()`：枚举可用的 loopback 输出设备，
+  `AudioEngine(device_index=...)` 可指定。
+
+### Changed
+
+- 主循环从"单一律动"改为"每帧问切换器要 transforms"；`sx/sy` 降级为
+  日志与 `at_rest` 闸门的汇总值。
+- 重生签名（跳帧判定）从 `(x, y, size, sx, sy)` 扩到含 `dx/dy/alpha`，
+  否则 takeover 每帧位移会被误判为"没变"而跳帧。
+- `make_launchers.py` 重写：优先 `.venv\Scripts\python.exe`，其次
+  `py -3`、`python`；找不到时给出 `uv venv` 提示。新增
+  `启动（无窗口）.bat`。
+
+### Tests
+
+- `tests/test_modes.py`（26 项）：8 模式在极端输入下 600 帧的数值有界性、
+  overlay 位移必须硬 0、takeover 必须真的会动、静音时不许大幅形变、
+  `Transform.blended/clamp` 契约、切换器轮换/手动/失败降级/归位。
+- `tests/test_hotkey.py`（10 项）：默认绑定表、无重复 id、全部带
+  `MOD_NOREPEAT`、无低级钩子回归守卫、注册/注销往返。
+- `smoke_v13.py` 增加 takeover 位移生效、同签名跳帧、归位正确三项断言。
+- **共 105 项单测 + 1 个端到端冒烟，全绿**。
+
 ## [1.5.0] - 2026-11-02
 
 全面审查（约 3500 行）后按优先级修的一批"真会咬人"的问题。
