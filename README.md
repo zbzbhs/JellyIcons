@@ -200,17 +200,42 @@ tkinter 缺失或被占用时，面板和热键都只记一条日志，主功能
 
 ### 方式二：从源码跑
 
-1. Windows 10/11
-2. `uv venv --python 3.11 .venv`
-3. `uv pip install --python .venv/Scripts/python.exe -r requirements.txt`
-4. `python make_launchers.py` 生成启动脚本
-5. 双击 `启动.bat`
+需要 Windows 10/11 + Python 3.10 以上。推荐用 `uv`（也能用 `python -m venv`）：
+
+```bat
+uv venv --python 3.11 .venv
+uv pip install --python .venv\Scripts\python.exe -r requirements.txt
+python make_launchers.py
+```
+
+最后一步生成 `启动.bat` / `诊断.bat` / `启动（无窗口）.bat` / `静默启动.vbs`。
+然后双击 `启动.bat`。
 
 自己打包：`python build_exe.py`（产物在 `dist/JellyIcons.exe`）。
 
-> 装的是 uv 的独立 Python 而不是微软商店版，因为商店版 python.exe 带
-> 低完整性标签，会被 UIPI 拦住读不到桌面图标——这就是 v1.5.0 之前
-> "双击启动毫无效果"的真正原因。
+### 为什么启动脚本要自己挑解释器
+
+桌面图标列表由 **explorer.exe（Medium 完整性）** 拥有。Windows 的 UIPI
+不允许低完整性进程通过 UI Automation 读取它的子项——程序会"看得见桌面
+列表、读不到任何图标"，于是安静地什么都不做。这不是能被代码绕过的，
+只能在启动前选对解释器。
+
+坑在于**文件完整性标签**：如果可执行文件带了
+`Mandatory Label\Low`（受限目录会把它继承给 `.venv\Scripts\python.exe`），
+**Windows 会强制该进程降为 Low，即使你从 Medium 的 cmd 里启动也一样**。
+把同一个文件复制到 `%LOCALAPPDATA%` 就恢复 Medium，所以这和 Python 版本、
+venv 结构都无关，纯粹是标签。
+
+因此 `启动.bat` 按这个顺序挑解释器：
+
+1. `.venv\pyvenv.cfg` 里 `home` 指向的 **base python**（装在用户 AppData，
+   不带该标签），再把它指回 `.venv\Lib\site-packages`
+2. `py -3`
+3. `PATH` 里的 `python`
+
+程序启动时也会自检完整性：不够就一次性说清原因并退出（返回码 2），
+不会静默空转。exe 版没有这个问题——`PyInstaller` 产出的 exe 落在你选的
+目录下，不带继承来的 Low 标签。
 
 ## 使用
 
@@ -229,7 +254,8 @@ tkinter 缺失或被占用时，面板和热键都只记一条日志，主功能
 
 `诊断.bat`（或 `python run.py --diagnose`）不动桌面，逐项自检：
 
-1. 进程完整性（须 Medium/High，Low 说明你从沙箱启动的）
+1. 进程完整性（须 Medium/High，Low 说明解释器带了低完整性标签——
+   改用 `启动.bat`）
 2. 音频 loopback（播放音乐 8 秒，bass 峰值应 > 0.02）
 3. Shell 图标位图（应取到几十项）
 4. UIA 桌面布局（应列出图标名和坐标；失败时附窗口链转储）
@@ -237,6 +263,19 @@ tkinter 缺失或被占用时，面板和热键都只记一条日志，主功能
 
 运行日志在 `JellyIcons.log`（自动轮转，1 MB × 3 备份），主循环每 5 秒
 输出 `[stat] overlays/bass/scale/fps/redraw` 健康行。
+
+### 端到端验证
+
+`verify_e2e.py` 不需要人盯着看：它合成一段有节奏的低频，跑完整流程，
+在 `App._compose` 出口处量**真正送进 `UpdateLayeredWindow` 的画布**，
+确认墨迹高度在连续起伏、窗口 x 坐标不变、真图标确实被隐藏又恢复。
+最后打印七项检查，全 OK 才叫"确定可用"。
+
+```bat
+"C:\Users\MR\AppData\Roaming\uv\python\cpython-3.11.15-windows-x86_64-none\python.exe" -X utf8 verify_e2e.py
+```
+
+（用 base python 跑，因为它才不会带 Low 标签。）
 
 ## 参数定制
 
@@ -283,12 +322,14 @@ run.py                  入口（--diagnose 诊断 / --watchdog 看门狗 / 数�
 JellyIcons.exe          Releases 里下载的单文件版本（本仓库不打进 git）
 启动.bat / 诊断.bat      一键启动 / 一键诊断（源码版）
 启动（无窗口）.bat       无控制台启动
-静默启动.vbs            无控制台启动（VBS 版）
+静默启动.vbs            完全静默（WScript）
 diagnose.py             诊断模式实现（5 项链路检查）
 run_tests.py            一键跑全部单测 + 冒烟
+verify_e2e.py           进程内端到端验证（量真正送出去的画布）
+verify_hide.py          真实 ListView 隐藏/恢复验证（finally 保证恢复）
 build_exe.py            PyInstaller 打包（--onefile，可选 --console）
 make_icon.py            生成多尺寸 .ico（纯 PIL）
-make_launchers.py       重新生成启动脚本
+make_launchers.py       生成 4 个启动脚本（自己挑 Medium 完整性的解释器）
 jellyicons/
   __init__.py            版本号
   paths.py               源码/打包两种运行方式下的资源与数据目录

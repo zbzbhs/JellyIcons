@@ -44,14 +44,18 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+
       - name: Launcher scripts are GBK-encoded (cmd parses them as GBK)
         shell: pwsh
         run: |
-          foreach ($f in @("启动.bat", "诊断.bat", "启动（无窗口）.bat")) {
+          $files = @("启动.bat", "诊断.bat", "启动（无窗口）.bat")
+          foreach ($f in $files) {
+            if (-not (Test-Path -LiteralPath $f)) { throw "缺少启动脚本 $f" }
             $bytes = [System.IO.File]::ReadAllBytes($f)
             # 0xEF 0xBB 0xBF 是 UTF-8 BOM；出现就说明又被编辑器存成 UTF-8 了
             if ($bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB) {
@@ -61,7 +65,27 @@ jobs:
             if ($text -notmatch "run\.py") {
               throw "$f 里找不到 run.py，脚本可能损坏"
             }
+            # 关键回归：脚本必须自己去 pyvenv.cfg 找 base python。
+            # 退回 where python 会在带 Low 完整性标签的环境里选中
+            # WindowsApps 存根，进程被强制降为 Low，UIA 读不到桌面。
+            if ($text -notmatch "pyvenv\.cfg") {
+              throw "$f 没有读取 .venv\pyvenv.cfg，无法挑到 Medium 完整性的解释器"
+            }
           }
-          Write-Host "launcher encoding OK"
+          Write-Host "launcher encoding + interpreter selection OK"
+
+      - name: Launchers regenerate identically (byte-stable)
+        shell: bash
+        run: |
+          cp "启动.bat" /tmp/a.bat
+          python -X utf8 make_launchers.py
+          cmp "启动.bat" /tmp/a.bat && echo "make_launchers.py 输出稳定"
+
       - name: Imports resolve
         run: python -c "import jellyicons.app, jellyicons.audio_engine, jellyicons.overlay, jellyicons.ui, jellyicons.hotkey, jellyicons.modes, jellyicons.integrity, jellyicons.paths; print('imports OK')"
+
+      - name: Integrity module reports something sane
+        shell: bash
+        run: |
+          python -X utf8 -c "from jellyicons import integrity; rid, name = integrity.current_integrity(); print('integrity =', rid, name); assert rid is not None, 'can not read integrity level'; assert isinstance(integrity.can_read_desktop(), bool); assert isinstance(integrity.describe(), str); print('integrity OK')"
+

@@ -31,6 +31,7 @@ import time
 
 from . import click_open, config, jelly, shell_icons
 from . import audio_engine
+from . import integrity
 from .activity import ActivityDetector
 from .audio_engine import AudioEngine
 from . import hotkey as hotkey_mod
@@ -670,6 +671,21 @@ class App:
         if not enable_dpi_awareness():
             log.warning("[main] DPI 感知设置失败：缩放屏上 overlay 可能错位")
 
+        # 完整性自检：桌面图标列表由 explorer（Medium）拥有，低完整性进程
+        # 会被 UIPI 拦在 UI Automation 之外——看得见列表、读不到子项，
+        # 表现就是「启动后毫无效果」。在这里一次性说清楚，不要让它
+        # 每 0.25 秒刷一行"副本布局不完整"。
+        if not integrity.can_read_desktop():
+            log.error(
+                "[main] 当前进程完整性 = %s，读不到桌面图标（被 UIPI 拦截）。"
+                "这不是程序 bug：可执行文件带了 Mandatory Label\\Low 标签时 "
+                "Windows 会强制降级。请改用项目里的「启动.bat」启动（它会挑"
+                "不带该标签的解释器），或把项目移到非受限目录。",
+                integrity.describe())
+            self.audio.close()
+            self._single_instance.release()
+            return 2
+
         if not self.audio.open():
             log.warning("[audio] 无音频输入，动画按静音处理")
 
@@ -974,4 +990,4 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())
