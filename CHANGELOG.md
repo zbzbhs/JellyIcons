@@ -2,6 +2,49 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/)。
 
+## [1.5.1] - 2026-11-10
+
+修「双击启动.bat，看起来什么都没发生」。
+
+### Fixed — 启动链路
+
+- **启动脚本选中了低完整性的解释器**。`启动.bat` 原来用 `where python`，
+  在本机命中的是 `%LOCALAPPDATA%\Microsoft\WindowsApps\python.exe`
+  （Microsoft Store 版的 App Execution Alias）。Store 应用跑在 **Low
+  完整性**，而桌面图标列表由 explorer（Medium）拥有——Windows 的 UIPI
+  不允许低完整性进程通过 UI Automation 读取它的子项，于是
+  `snapshot()` 永远返回 0 个图标，程序安静地什么都不做。
+
+  真正的坑藏在文件标签里：`icacls` 显示
+  `Mandatory Label\Low Mandatory Level:(I)(NW)` 被继承到了
+  `.venv\Scripts\python.exe` 上（工作目录带了该标签）。**Windows 启动
+  带 Low 标签的可执行文件时会强制把进程降到 Low**，即使从 Medium 的
+  cmd 里启动也一样。把同一个文件复制到 `%LOCALAPPDATA%` 后立刻恢复
+  Medium —— 所以这不是代码问题，是选错了解释器。
+
+- **启动脚本改为优先选 Medium 的解释器**：读 `.venv\pyvenv.cfg` 的
+  `home` 行拿到 venv 底层的 base python（装在用户 AppData 下，不带该
+  标签），再用 `PYTHONPATH` 指到 `.venv\Lib\site-packages`。依次回退
+  `py -3`、`python`。`诊断.bat`、`启动（无窗口）.bat`、`静默启动.vbs`
+  同样处理。
+
+### Added
+
+- `jellyicons/integrity.py`：读进程完整性（`GetTokenInformation` +
+  `TokenIntegrityLevel`），提供 `current_integrity()`、`can_read_desktop()`。
+- 启动时自检：完整性不够就**一次性**说清楚原因并退出（返回码 2），
+  不再每 0.25 秒刷一行"副本布局不完整"。
+
+### Changed
+
+- 去掉启动脚本里的 `PYTHONIOENCODING=utf-8`：Python 在真控制台上走
+  `WriteConsoleW`，任何代码页都能正确显示中文；设了这个变量反而会被
+  当成字节流写出，中文变乱码。
+- `verify_e2e.py` 重写为**进程内**验证：在 `App._compose` 出口处直接量
+  真正送进 `UpdateLayeredWindow` 的画布（`PrintWindow` 抓
+  `UpdateLayeredWindow` 表面不可靠，只采到 8 帧、高度序列是
+  "抓到/没抓到"）。现在采 500+ 帧，墨迹高度是真的连续起伏。
+
 ## [1.5.0] - 2026-11-02
 
 全面审查（约 3500 行）后按优先级修的一批"真会咬人"的问题。
