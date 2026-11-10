@@ -198,6 +198,16 @@ tkinter 缺失或被占用时，面板和热键都只记一条日志，主功能
 单文件、免安装、不带注册表项。日志、心跳、comtypes 代码缓存放 exe 同级
 目录（不可写时自动落到 `%LOCALAPPDATA%\JellyIcons`），不污染系统。
 
+单文件 exe 每次启动都要把自己解压一次，解压点固定在
+`%LOCALAPPDATA%\JellyIcons\rt`，**不依赖 `%TEMP%`**（有些机器的 TEMP 被
+改坏或不可写，那种环境下会弹 `Could not create temporary directory!`）。
+如果仍然起不来，用下面的目录版：
+
+1. 下载并解压 `JellyIcons-portable.zip`（整个文件夹，别只拿里面的 exe）
+2. 双击文件夹里的 `JellyIcons-portable.exe`
+
+目录版启动时不解压，完全不碰 TEMP，代价是它不是单文件（约 73 MB）。
+
 #### 如果 Windows 弹出「已保护你的电脑」
 
 会看到红色窗口：
@@ -214,7 +224,7 @@ tkinter 缺失或被占用时，面板和热键都只记一条日志，主功能
 
 ```powershell
 Get-FileHash .\JellyIcons.exe -Algorithm SHA256
-# v1.7.0: 34AEDE53FE7B51D513490494AD20D888C5435DA95FF1A928294A96A51EFA145B
+# v1.7.1: E54941D91021190AC35700455AF0A95EA2F18EE8E602E1417911A73237951AB0
 ```
 
 或者干脆不安 exe，走下面的方式二从源码跑——源码全在这里，一行行能读。

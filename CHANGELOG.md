@@ -2,6 +2,27 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/)。
 
+## [1.7.1] - 2026-11-10
+
+修一个让 exe **根本起不来**的问题：双击后弹
+`Could not create temporary directory!`。
+
+### Fixed
+
+- 单文件 exe 的解压目录不再用 `%TEMP%`。PyInstaller 的 onefile 形态每次
+  启动都要把自己解压到 `%TEMP%\_MEIxxxxxx`，一旦 TEMP 指向不存在或没有
+  写权限的位置（有些精简系统、改过环境变量的机器、第三方清理工具之后
+  的残留配置），C 层 bootloader 会在 Python 代码跑起来之前就弹框退出，
+  连 `JellyIcons.log` 都留不下，用户只能看到一个英文错误框。
+  现在 `build_exe.py` 传 `--runtime-tmpdir "%LOCALAPPDATA%\JellyIcons\rt"`，
+  解压点与 TEMP 完全解耦、位置固定也方便清理。
+
+### Added
+
+- `build_exe.py --portable`：出一个**目录版**（`dist/JellyIcons-portable/`，
+  exe 5.8 MB + `_internal/`，整个文件夹约 76 MB）。目录版启动时不解压，
+  因此完全不碰 TEMP —— 单文件版万一还遇到环境问题，这是兜底形态。
+
 ## [1.7.0] - 2026-11-10
 
 两条硬需求：**能换台电脑直接用**（单文件 exe），**界面要好看**（不再用

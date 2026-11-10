@@ -7,4 +7,4 @@ window the built-in "Show desktop icons" switch toggles -- and always restores
 it on exit (plus a detached watchdog for hard kills).
 """
 
-__version__ = "1.7.0"
+__version__ = "1.7.1"
