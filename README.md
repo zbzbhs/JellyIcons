@@ -160,15 +160,22 @@ explorer 的 `IconLayouts` 布局数据一个字节都不会被改写，退出�
 
 ## 控制面板与热键
 
-![控制面板](docs/panel.png)
+![控制面板](docs/ui_grab.png)
 
-面板跑在独立 Tk 线程，所有交互只通过 `app.post()` 发消息、`app.snapshot()`
+面板是**自绘的**无边框窗口：整块界面由 PIL 渲染成一图像素级贴到 Tk
+Canvas 上，圆角以外全涂颜色键（`-transparentcolor`）所以屏幕上只剩下
+圆角卡片本身，没有系统标题栏、没有 ttk 那套灰控件。拖标题栏可移动，
+右上角折叠 / 关闭。
+
+它跑在独立 Tk 线程，所有交互只通过 `app.post()` 发消息、`app.snapshot()`
 读快照，绝不跨线程碰窗口或桌面：
 
-- 音频输出设备下拉（多声卡/虚拟声卡可选）
-- 64 段实时频谱（绿柱 + 黄色峰值）
-- 8 个模式按钮（当前模式高亮）、自动轮换开关、停止按钮
-- 状态行：模式 · 引擎 · 图标数 · 音乐状态 · fps
+- 状态卡：音乐中 / 待机 · 当前模式 · 引擎（原位/接管）· 图标数 · FPS ·
+  音频状态 · 底部一条低频电平
+- 64 段实时频谱（绿柱 + 黄色峰值保持）
+- 8 个模式按钮（当前模式绿框高亮，副标注明是"原位"还是"接管"）
+- 自动轮换开关、音频输出设备下拉、停止并退出
+- 三行热键提示
 
 热键（`RegisterHotKey`，独立消息线程，**不用全局低级钩子**——钩子会
 堵系统输入队列，早期版本真的把鼠标卡死过）：
@@ -183,25 +190,40 @@ tkinter 缺失或被占用时，面板和热键都只记一条日志，主功能
 
 ## 安装
 
-1. Windows 10/11，Python 3.10+ 加入 PATH
-2. `pip install -r requirements.txt`
-3. 双击 `启动.bat`
+### 方式一：直接用 exe（推荐，换台电脑拷过去就能跑）
+
+1. 从 [Releases](../../releases) 下载 `JellyIcons.exe`
+2. 双击。**不需要装 Python，不需要装任何依赖**
+
+单文件、免安装、不带注册表项。日志、心跳、comtypes 代码缓存放 exe 同级
+目录（不可写时自动落到 `%LOCALAPPDATA%\JellyIcons`），不污染系统。
+
+### 方式二：从源码跑
+
+1. Windows 10/11
+2. `uv venv --python 3.11 .venv`
+3. `uv pip install --python .venv/Scripts/python.exe -r requirements.txt`
+4. `python make_launchers.py` 生成启动脚本
+5. 双击 `启动.bat`
+
+自己打包：`python build_exe.py`（产物在 `dist/JellyIcons.exe`）。
+
+> 装的是 uv 的独立 Python 而不是微软商店版，因为商店版 python.exe 带
+> 低完整性标签，会被 UIPI 拦住读不到桌面图标——这就是 v1.5.0 之前
+> "双击启动毫无效果"的真正原因。
 
 ## 使用
 
-- **启动**：双击 `启动.bat`（有控制台日志）或 `静默启动.vbs`（无窗口）
+- **启动**：双击 `JellyIcons.exe`（或源码版的 `启动.bat` / `静默启动.vbs`）
 - **播放音乐**，图标开始随低频节拍 Q 弹；音乐一响（约 0.2 秒）真图标
   自动隐藏，换成会动的副本，音乐停 1 秒后自动恢复
 - **切模式**：控制面板点按钮，或 `Ctrl+Alt+→/←`；自动轮换默认开
 - **双击副本图标** = 打开对应应用（音乐模式期间有效）
-- **关闭**：`Ctrl+Alt+F9` / 面板"停止" / 控制台 Ctrl+C / 关窗；
-  静默模式任务管理器结束 python（即使直接强杀，看门狗也会把图标恢复回来）
+- **关闭**：`Ctrl+Alt+F9` / 面板"停止并退出" / 控制台 Ctrl+C；
+  即使直接强杀，看门狗也会把图标恢复回来
 - **只允许开一个**：v1.5.0 起有单实例互斥，第二个实例会直接退出
   （避免两个进程互相覆盖心跳、抢着隐藏/恢复图标）
-- **没效果**：先跑 `诊断.bat`（见下）
-
-> 必须从正常的资源管理器 / cmd 启动。低完整性沙箱会话会被 UIPI 拦住
-> UIA 读取，程序会提示后空转（这是 Windows 的安全边界，属预期行为）。
+- **没效果**：`JellyIcons.exe --diagnose`（源码版跑 `诊断.bat`）
 
 ## 诊断
 
@@ -257,54 +279,61 @@ tkinter 缺失或被占用时，面板和热键都只记一条日志，主功能
 ## 项目结构
 
 ```
-run.py                  入口（--diagnose 诊断 / 数字秒做限时测试）
-启动.bat / 诊断.bat      一键启动 / 一键诊断
+run.py                  入口（--diagnose 诊断 / --watchdog 看门狗 / 数字秒限时测试）
+JellyIcons.exe          Releases 里下载的单文件版本（本仓库不打进 git）
+启动.bat / 诊断.bat      一键启动 / 一键诊断（源码版）
 启动（无窗口）.bat       无控制台启动
 静默启动.vbs            无控制台启动（VBS 版）
 diagnose.py             诊断模式实现（5 项链路检查）
 run_tests.py            一键跑全部单测 + 冒烟
+build_exe.py            PyInstaller 打包（--onefile，可选 --console）
+make_icon.py            生成多尺寸 .ico（纯 PIL）
+make_launchers.py       重新生成启动脚本
 jellyicons/
   __init__.py            版本号
-  config.py             壁纸参数 + 几何/模式常量
-  jelly.py              壁纸 processPulse/updateScale 逐行移植
-  audio_engine.py       WASAPI loopback → 64 段对数频谱；设备枚举
-  desktop_reader.py     UIA 只读布局（句柄链 + UIA 兜底，comtypes 缓存重定向）
-  shell_icons.py        Shell API 取 256px 真 alpha 图标位图
-  overlay.py            穿透分层窗口（UpdateLayeredWindow）
-  activity.py           活动度检测 + 逐频段 AGC（等价壁纸拿到的 audioData）
-  music_mode.py         音乐检测滞回 + 图标隐藏/恢复状态机
-  click_open.py         双击副本打开对应应用（只读轮询，无钩子）
-  single_instance.py    单实例互斥（避免多开互踩心跳）
-  watchdog.py           强杀自愈（独立子进程，心跳文件）
-  hotkey.py             RegisterHotKey 全局热键（不用低级钩子）
-  panel.py              Tk 控制面板（独立线程，post/snapshot 通信）
+  paths.py               源码/打包两种运行方式下的资源与数据目录
+  config.py              壁纸参数 + 几何/模式常量
+  jelly.py               壁纸 processPulse/updateScale 逐行移植
+  audio_engine.py        WASAPI loopback → 64 段对数频谱；设备枚举
+  desktop_reader.py      UIA 只读布局（句柄链 + UIA 兜底，comtypes 缓存重定向）
+  shell_icons.py         Shell API 取 256px 真 alpha 图标位图
+  overlay.py             穿透分层窗口（UpdateLayeredWindow）
+  activity.py            活动度检测 + 逐频段 AGC（等价壁纸拿到的 audioData）
+  music_mode.py          音乐检测滞回 + 图标隐藏/恢复状态机
+  click_open.py          双击副本打开对应应用（只读轮询，无钩子）
+  single_instance.py     单实例互斥（避免多开互踩心跳）
+  watchdog.py            强杀自愈（独立子进程，心跳文件）
+  integrity.py           完整性级别自检（Low 会被 UIPI 拦住读桌面）
+  hotkey.py              RegisterHotKey 全局热键（不用低级钩子）
+  ui.py                  自绘控制面板（PIL 渲染 + Tk 颜色键透明，独立线程）
   modes/
-    base.py             Transform / Mode / ModeContext + 引擎常量
-    util.py             approach / clamp / lerp / sustain
-    switcher.py         自动轮换 + 过渡 + 失败降级
-    jelly.py            律动        (overlay)
-    bands.py            音浪        (overlay)
-    firework.py         烟花        (overlay)
-    free.py             自由        (takeover)
-    kun.py              两年半      (takeover)
-    heart.py            心动        (takeover)
-    wave.py             海浪        (takeover)
-    ring.py             星环        (takeover)
-  app.py                主循环（固定画布几何、无感切换、DPI 感知、跳帧）
-  logutil.py            控制台+文件双路日志（轮转）
+    base.py              Transform / Mode / ModeContext + 引擎常量
+    util.py              approach / clamp / lerp / sustain
+    switcher.py          自动轮换 + 过渡 + 失败降级
+    jelly.py             律动        (overlay)
+    bands.py             音浪        (overlay)
+    firework.py          烟花        (overlay)
+    free.py              自由        (takeover)
+    kun.py               两年半      (takeover)
+    heart.py             心动        (takeover)
+    wave.py              海浪        (takeover)
+    ring.py              星环        (takeover)
+  app.py                 主循环（固定画布几何、无感切换、DPI 感知、跳帧）
+  logutil.py             控制台+文件双路日志（轮转）
 tests/
-  test_jelly.py         律动模型/配置/几何单测（9 项）
-  test_app.py           同步去重/固定画布/跳帧/预绘制/覆盖率门槛（17 项）
-  test_activity.py      AGC/包络/presence 单测（11 项）
-  test_music_mode.py    滞回时序/allow_exit 闸门/预绘制/隐藏退避/恢复失败（18 项）
-  test_audio.py         音频回调过期/流中断/缓冲区清理（5 项）
-  test_pidl.py          PIDL 释放/身份映射/重名不猜（5 项）
-  test_single_instance.py 互斥体获取/释放（4 项）
-  test_modes.py         8 模式有界性/引擎契约/切换器/失败降级（26 项）
-  test_hotkey.py        热键绑定表/无钩子守卫/注册往返（10 项）
+  test_jelly.py          律动模型/配置/几何单测（9 项）
+  test_app.py            同步去重/固定画布/跳帧/预绘制/覆盖率门槛（17 项）
+  test_activity.py       AGC/包络/presence 单测（11 项）
+  test_music_mode.py     滞回时序/allow_exit 闸门/预绘制/隐藏退避/恢复失败（18 项）
+  test_audio.py          音频回调过期/流中断/缓冲区清理（5 项）
+  test_pidl.py           PIDL 释放/身份映射/重名不猜（5 项）
+  test_single_instance.py 互斥体获取/释放（5 项）
+  test_modes.py          8 模式有界性/引擎契约/切换器/失败降级（28 项）
+  test_hotkey.py         热键绑定表/无钩子守卫/注册往返（10 项）
+  test_ui.py             面板布局/命中区/点击语义/渲染产物（14 项）
 verify_hide.py          真实 ListView 隐藏/恢复验证（finally 保证恢复）
+verify_e2e.py           端到端（真窗口 + 假音乐，量形变摆幅与横移）
 smoke_v13.py            端到端冒烟（真窗口 + 假快照 + 假音乐）
-make_launchers.py       重新生成启动脚本
 CHANGELOG.md            版本历史
 LICENSE                 MIT
 ```
@@ -315,7 +344,7 @@ LICENSE                 MIT
 python -X utf8 run_tests.py
 ```
 
-共 **105 项单测 + 1 个端到端冒烟**，全部不依赖真实桌面。想验真实
+共 **122 项单测 + 1 个端到端冒烟**，全部不依赖真实桌面。想验真实
 隐藏/恢复，另跑 `python -X utf8 verify_hide.py`（内部 finally 保证恢复）。
 
 （不能 `python -m unittest tests.test_jelly`——venv 里 ultralytics 的

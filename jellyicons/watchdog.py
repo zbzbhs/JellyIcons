@@ -21,6 +21,7 @@ import time
 from pathlib import Path
 
 from .logutil import get_logger
+from . import paths
 
 log = get_logger()
 
@@ -29,7 +30,9 @@ HEARTBEAT_STALE_S = 1.5     # 心跳过期阈值：主进程超过此时间未�
 EXIT_GRACE_S = 2.0          # 主进程退出标记出现后看门狗最长存活
 
 # 心跳文件：主进程写、看门狗读。JSON 单行，覆盖写。
-WATCH_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# 必须在可写目录（exe 下是 exe 同级或 %LOCALAPPDATA%），主进程与看门狗
+# 各自调用 paths.data_dir() 会得到同一个答案。
+WATCH_DIR = paths.data_dir()
 HEARTBEAT_PATH = Path(WATCH_DIR) / ".heartbeat.json"
 
 

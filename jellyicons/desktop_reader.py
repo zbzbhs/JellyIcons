@@ -18,6 +18,8 @@ from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import paths
+
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 user32.FindWindowW.restype = wintypes.HWND
 user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
@@ -59,23 +61,36 @@ def _bootstrap_comtypes() -> str:
     workspace directory, and stub ``comtypes.gen`` before the package
     ``__init__`` runs.
     """
-    cache = Path(__file__).resolve().parents[1] / ".cache" / "comtypes"
+    # 必须可写：comtypes 会在这里生成 UIAutomation 的类型代码。打包成 exe
+    # 后 __file__ 在只读的 _MEIPASS 里，所以走 paths.data_dir()。
+    cache = Path(paths.cache_dir())
     cache.mkdir(parents=True, exist_ok=True)
     if "comtypes.client._code_cache" in sys.modules:
         return str(cache)
 
-    import importlib.util
-
     import comtypes
 
-    comtypes_dir = Path(comtypes.__file__).parent
-    spec = importlib.util.spec_from_file_location(
-        "comtypes.client._code_cache", comtypes_dir / "client" / "_code_cache.py"
-    )
-    code_cache = importlib.util.module_from_spec(spec)
-    sys.modules["comtypes.client._code_cache"] = code_cache
-    spec.loader.exec_module(code_cache)
-    code_cache._find_gen_dir = lambda: str(cache)
+    if paths.is_frozen():
+        # exe 里 comtypes 是从 PYZ 里加载的，磁盘上没有 _code_cache.py 这个
+        # 文件（用 spec_from_file_location 会 FileNotFoundError）。这里直接
+        # 造一个只提供 `_find_gen_dir` 的替身：comtypes.client 的 __init__
+        # 只从它导入这一个名字，其余辅助函数与生成代码无关。
+        code_cache = types.ModuleType("comtypes.client._code_cache")
+        code_cache._find_gen_dir = lambda: str(cache)
+        code_cache.__file__ = str(cache / "_code_cache.py")
+        sys.modules["comtypes.client._code_cache"] = code_cache
+    else:
+        import importlib.util
+
+        comtypes_dir = Path(comtypes.__file__).parent
+        spec = importlib.util.spec_from_file_location(
+            "comtypes.client._code_cache",
+            comtypes_dir / "client" / "_code_cache.py",
+        )
+        code_cache = importlib.util.module_from_spec(spec)
+        sys.modules["comtypes.client._code_cache"] = code_cache
+        spec.loader.exec_module(code_cache)
+        code_cache._find_gen_dir = lambda: str(cache)
 
     gen = types.ModuleType("comtypes.gen")
     gen.__path__ = [str(cache)]

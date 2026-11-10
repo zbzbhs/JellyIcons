@@ -2,6 +2,76 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/)。
 
+## [1.7.0] - 2026-11-10
+
+两条硬需求：**能换台电脑直接用**（单文件 exe），**界面要好看**（不再用
+ttk 那套系统灰控件）。
+
+### Added — 单文件 exe
+
+- `build_exe.py`：PyInstaller 一键打包，默认 `--onefile --windowed`
+  （31.7 MB，双击即跑，**目标机器不需要装 Python**），`--console` 出
+  带控制台的调试版。
+- `make_icon.py`：纯 PIL 生成多尺寸 `assets/jellyicons.ico`
+  （16/24/32/48/64/128/256），深色圆角底 + 三颗方块，中间那颗压扁。
+- `jellyicons/paths.py`：源码与打包两种形态的资源/数据目录解析。打包后
+  `__file__` 在只读的 `_MEIxxxx` 里，日志、心跳、comtypes 代码缓存统一
+  落到 exe 同级目录，不可写时退到 `%LOCALAPPDATA%\JellyIcons`。
+- `run.py --watchdog`：打包后没法再 `-m jellyicons.watchdog`，看门狗改成
+  self-exec（`JellyIcons.exe --watchdog`）。
+
+### Added — 自绘控制面板
+
+- `jellyicons/ui.py` 取代 `panel.py`：无边框 Tk 窗口 + 颜色键透明
+  （`-transparentcolor`），整块界面由 PIL 渲染成一张图贴到 Canvas 上，
+  圆角以外全透明。深色渐变卡片、自绘开关/按钮/下拉、hover 高亮、
+  拖标题栏移动、右上角折叠/关闭。
+- 64 段实时频谱（绿柱 + 黄色峰值保持）、状态卡（模式/引擎/图标数/FPS/
+  音频状态/低频电平条）、8 个模式按钮（高亮当前模式、标注原位或接管）、
+  自动轮换开关、音频设备下拉、停止并退出、三行热键提示。
+- `docs/ui_grab.png` 是真实运行时的截图；`ui.render_preview()` 可离线出图
+  （README 的 `docs/ui_preview.png`）。
+
+### Fixed
+
+- **打包后 comtypes 起不来**：`_bootstrap_comtypes()` 用
+  `spec_from_file_location` 加载 `comtypes/client/_code_cache.py`，而
+  PyInstaller 把 .py 打进 PYZ，磁盘上并没有这个文件 →
+  `FileNotFoundError`，桌面布局读不到、一个 overlay 都建不出来。
+  打包形态改为直接造一个只带 `_find_gen_dir` 的替身模块。
+- **打包后 `No module named 'email'`**：原先 EXCLUDE 里剔了标准库
+  （想瘦身），但 comtypes 生成 UIAutomation 代码时 `importlib.metadata`
+  依赖 `email`。改成只剔第三方大包（matplotlib/scipy/pandas 等）。
+- **`--windowed` 下日志炸**：`sys.stdout` 是 `None`，
+  `logging.StreamHandler(None)` 每次 emit 抛 AttributeError。改为
+  `sys.stdout or sys.stderr`，两者都没有就不挂流式 handler。
+- **「自由」模式每帧抛异常**（真机上暴露）：`if ctx.bands` 对 numpy 数组
+  是真值歧义 → `ValueError`，连续 3 次后被切换器判定为坏模式跳过。
+  在 `ModeContext.__init__` 单点收口成 `list(bands)`。新增
+  `test_numpy_bands_do_not_break_modes` 回归。
+- **面板底部按钮被窗口裁掉**：`_measure()` 按快照里的 `mode_count` 算高度，
+  `_draw_modes()` 却按 `app.mode_list` 画，两者不一致时底部超界。
+  改为同一份数据源 `_modes()`。
+- **折叠态仍在画整块面板**：`_render()` 和 `render_preview()` 各写一份
+  绘制顺序，折叠逻辑只改了一边。抽出 `_draw_sections()` 单一入口。
+- **折叠态按钮行为反了**：折叠时命中表里那一格仍报 `collapse`，
+  点它只会再折叠一次（视觉上是展开图标）。改为按状态报 `expand`。
+- 音频模块里 4 处 `print()` 改为 logger（windowed 版没有 stdout）。
+
+### Changed
+
+- 启动脚本仍保留（源码用户），但**首选**是 exe。
+- README 安装节改为「方式一：直接用 exe / 方式二：从源码跑」，并说明
+  为什么必须用独立 Python 而不是微软商店版。
+
+### Tests
+
+- 新增 `tests/test_ui.py`（14 项）：高度必须装下所有区块、折叠态只剩
+  标题栏、命中区不越界、每个模式按钮可点、点击投递正确命令、拖动后松手
+  不算点击、波形峰值保持、频段数异常不崩、离线渲染出图、色调对比度。
+- 新增 `tests/test_modes.py` 的 numpy 回归 2 项。
+- 合计 **122 项单测 + 1 个端到端冒烟**，全绿；`pyflakes` 全仓零告警。
+
 ## [1.6.0] - 2026-11-09
 
 从"一个效果"变成"一套效果系统"。核心是**双引擎**：同一份桌面、同一份

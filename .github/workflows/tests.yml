@@ -64,4 +64,4 @@ jobs:
           }
           Write-Host "launcher encoding OK"
       - name: Imports resolve
-        run: python -c "import jellyicons.app, jellyicons.audio_engine, jellyicons.overlay, jellyicons.panel, jellyicons.hotkey, jellyicons.modes; print('imports OK')"
+        run: python -c "import jellyicons.app, jellyicons.audio_engine, jellyicons.overlay, jellyicons.ui, jellyicons.hotkey, jellyicons.modes, jellyicons.integrity, jellyicons.paths; print('imports OK')"

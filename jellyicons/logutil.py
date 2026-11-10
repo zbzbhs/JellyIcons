@@ -8,9 +8,10 @@ import logging.handlers
 import os
 import sys
 
-_LOG_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "JellyIcons.log"
-)
+from . import paths
+
+# 打包成 exe 后 __file__ 在只读的临时目录里，日志必须写到 paths.data_dir()。
+_LOG_PATH = os.path.join(paths.data_dir(), "JellyIcons.log")
 _MAX_BYTES = 1_000_000
 _BACKUPS = 3
 
@@ -35,9 +36,14 @@ def get_logger():
         logger.addHandler(fh)
     except OSError:
         pass  # 日志文件都写不进去时至少还有控制台
-    sh = logging.StreamHandler(sys.stdout)
-    sh.setFormatter(fmt_cons)
-    logger.addHandler(sh)
+    # --windowed 打包时 sys.stdout 是 None，StreamHandler(None) 会在
+    # emit() 里对 None 调 write → 每条日志抛 AttributeError。只有真的
+    # 有控制台流时才挂这个 handler。
+    stream = sys.stdout or sys.stderr
+    if stream is not None:
+        sh = logging.StreamHandler(stream)
+        sh.setFormatter(fmt_cons)
+        logger.addHandler(sh)
     return logger
 
 

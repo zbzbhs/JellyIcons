@@ -18,3 +18,8 @@ venv/
 Thumbs.db
 desktop.ini
 push_via_api.py
+
+# PyInstaller 产物（要发布走 GitHub Release，不进仓库）
+build/
+dist/
+*.spec

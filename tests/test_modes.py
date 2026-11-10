@@ -112,6 +112,48 @@ class BoundedTests(unittest.TestCase):
                 worst, bad = self._run(name)
                 self.assertEqual(bad, [], "%s 越界: %r" % (name, bad[:3]))
 
+    def test_numpy_bands_do_not_break_modes(self):
+        """回归：audio.bands() 返回 numpy 数组，模式里 `if ctx.bands` 会炸。
+
+        真机日志出现过 `free tick 异常: ValueError('The truth value of an
+        array with more than one element is ambiguous')` —— 单元测试一直用
+        list 喂数据，所以从没复现。ModeContext 现在把 bands 转成 list，
+        这里直接用 numpy 数组构造上下文，确保 8 个模式都能跑。
+        """
+        try:
+            import numpy as np
+        except ImportError:  # pragma: no cover - numpy 是硬依赖
+            self.skipTest("numpy 不可用")
+        arr = np.array([min(1.0, 0.2 + 0.5 * math.sin(i * 0.4))
+                        for i in range(64)], dtype=np.float64)
+        ctx = ModeContext(icons=_icons(), bands=arr, bass=0.9, presence=0.7,
+                          jelly=jelly.make_state(), screen=(1920, 1080),
+                          now=10.0)
+        self.assertIsInstance(ctx.bands, list, "ModeContext 必须把 bands 转成 list")
+        for name in names():
+            with self.subTest(mode=name):
+                mode = create(name)
+                mode.attach(ctx)
+                out = mode.tick(ctx, 1.0 / 60.0)
+                self.assertTrue(out, "%s 在有频段时不应返回空" % name)
+                for tf in out.values():
+                    self.assertTrue(math.isfinite(tf.sx))
+                    self.assertTrue(math.isfinite(tf.sy))
+
+    def test_empty_bands_fall_back_to_still(self):
+        """没有频段时（音频未就绪）模式要么静止要么给 1:1，不能抛异常。"""
+        ctx = ModeContext(icons=_icons(), bands=[], bass=0.0, presence=0.0,
+                          jelly=jelly.make_state(), screen=(1920, 1080),
+                          now=10.0)
+        for name in names():
+            with self.subTest(mode=name):
+                mode = create(name)
+                mode.attach(ctx)
+                out = mode.tick(ctx, 1.0 / 60.0)
+                for key, tf in out.items():
+                    self.assertLess(abs(tf.sx - 1.0), 0.35,
+                                    "%s/%s 静音时形变过大" % (name, key))
+
     def test_overlay_modes_never_move(self):
         """overlay 引擎的位移必须是硬 0 —— 这是不打扰桌面的根基。"""
         for name in names():

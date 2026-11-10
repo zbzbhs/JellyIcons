@@ -31,6 +31,9 @@ except ImportError:
     pa = None
 
 from . import config
+from .logutil import get_logger
+
+log = get_logger()
 
 NUM_BANDS = 64
 F_MIN = 20.0
@@ -119,10 +122,10 @@ class AudioEngine(object):
         try:
             p, dev = self._pick_loopback()
         except Exception as e:
-            print("[audio] 枚举失败:", e)
+            log.warning("[audio] 枚举失败: %r", e)
             return False
         if dev is None:
-            print("[audio] 没找到 loopback 设备")
+            log.warning("[audio] 没找到 loopback 设备")
             return False
         self._pa = p
         self.rate = int(dev["defaultSampleRate"])
@@ -134,7 +137,7 @@ class AudioEngine(object):
                 frames_per_buffer=self.block,
                 stream_callback=self._callback)
         except Exception as e:
-            print("[audio] 打开流失败:", e)
+            log.warning("[audio] 打开流失败: %r", e)
             return False
         self.device_name = dev["name"]
         self.available = True
@@ -142,7 +145,7 @@ class AudioEngine(object):
         self._callback_count = 0
         self._build_band_map(self.block)
         self._window = np.hanning(self.block).astype(np.float32)
-        print("[audio] loopback OK: %s %d Hz" % (self.device_name, self.rate))
+        log.info("[audio] loopback OK: %s %d Hz", self.device_name, self.rate)
         return True
 
     def _build_band_map(self, nfft):

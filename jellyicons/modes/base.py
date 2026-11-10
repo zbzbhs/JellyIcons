@@ -103,7 +103,11 @@ class ModeContext:
 
     def __init__(self, icons, bands, bass, presence, jelly, screen, now):
         self.icons = icons          # [(key, DesktopIcon)]
-        self.bands = bands          # 64 段 AGC 后的频段
+        # 64 段 AGC 后的频段。audio.bands() 返回的是 numpy 数组，
+        # 而 numpy 数组不能直接当布尔用（`if bands` 会抛 ValueError），
+        # 模式里到处是 `if ctx.bands` / `ctx.bands or []`，所以在这里
+        # 一次性转成普通 list —— 单点收口，模式永远拿到可判空的序列。
+        self.bands = list(bands) if bands is not None else []
         self.bass = bass
         self.presence = presence
         self.jelly = jelly          # JellyState（律动类模式共用）

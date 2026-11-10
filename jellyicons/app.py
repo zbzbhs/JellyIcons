@@ -34,7 +34,7 @@ from . import audio_engine
 from .activity import ActivityDetector
 from .audio_engine import AudioEngine
 from . import hotkey as hotkey_mod
-from . import panel as panel_mod
+from . import ui as ui_mod
 from .modes import BY_NAME, ModeContext, Transform
 from .modes.switcher import ModeSwitcher
 from .desktop_reader import DesktopReader, IntegrityError
@@ -819,7 +819,9 @@ class App:
                 hidden=bool(hidden), icons=len(self.overlays),
                 fps=float(current_fps), auto=bool(self.auto_switch),
                 device=self.audio.device_name,
-                audio_ok=bool(self.audio.available))
+                audio_ok=bool(self.audio.available),
+                version=__version__, mode_count=len(self.mode_list),
+                hotkeys=self.hotkey_hints)
 
             spent = time.perf_counter() - now
             sleep = frame_time - spent
@@ -863,10 +865,10 @@ class App:
 
         # 面板
         try:
-            self.panel = panel_mod.ControlPanel(self)
+            self.panel = ui_mod.ControlPanel(self)
             self.panel.start()
         except Exception as exc:
-            log.warning("[panel] 启动失败（不影响动画）: %r", exc)
+            log.warning("[ui] 启动失败（不影响动画）: %r", exc)
             self.panel = None
 
     def _stop_aux(self):
@@ -886,16 +888,25 @@ class App:
     # ---- 看门狗 ----
 
     def _start_watchdog(self):
-        """以 DETACHED_PROCESS 启动独立看门狗：主进程被强杀时恢复图标。"""
+        """以 DETACHED_PROCESS 启动独立看门狗：主进程被强杀时恢复图标。
+
+        打包成 exe 后 sys.executable 是 exe 本身、没有 -m 这回事，所以
+        改成自执行：`JellyIcons.exe --watchdog`。两条路径都跑同一个
+        jellyicons.watchdog.main()。
+        """
         try:
             creationflags = getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+            if getattr(sys, "frozen", False):
+                cmd = [sys.executable, "--watchdog"]
+                cwd = os.path.dirname(os.path.abspath(sys.executable))
+            else:
+                cmd = [sys.executable, "-X", "utf8", "-m",
+                       "jellyicons.watchdog"]
+                cwd = os.path.dirname(os.path.dirname(
+                    os.path.abspath(__file__)))
             self._watchdog_proc = subprocess.Popen(
-                [sys.executable, "-X", "utf8", "-m", "jellyicons.watchdog"],
-                cwd=os.path.dirname(os.path.dirname(
-                    os.path.abspath(__file__))),
-                creationflags=creationflags,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL)
+                cmd, cwd=cwd, creationflags=creationflags,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             log.info("[watchdog] 看门狗已启动 pid=%s",
                      self._watchdog_proc.pid)
         except Exception as exc:
@@ -939,6 +950,11 @@ class App:
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     duration = None
+    if argv and argv[0] == "--watchdog":
+        # exe 自执行看门狗（源码运行时走 -m jellyicons.watchdog）
+        from . import watchdog as wd
+        wd.main()
+        return 0
     if argv and argv[0].isdigit():
         duration = float(argv[0])
         argv = argv[1:]

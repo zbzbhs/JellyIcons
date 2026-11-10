@@ -8,10 +8,10 @@ from __future__ import annotations
 
 import ctypes
 from ctypes import wintypes
-import os
 import time
+import traceback
 
-from jellyicons import config, shell_icons
+from jellyicons import config, paths, shell_icons
 from jellyicons.audio_engine import AudioEngine
 from jellyicons.desktop_reader import DesktopReader, IntegrityError
 from jellyicons.logutil import get_logger
@@ -153,7 +153,11 @@ def run_diagnose(duration=None):
         print("[4] UIA 桌面布局: IntegrityError —— %s" % exc)
         _dump_window_chain()
     except Exception as exc:
+        # 打包成 exe 后没有交互式调试器，把栈打出来才追得动
         print("[4] UIA 桌面布局: 异常 %r" % exc)
+        print("    traceback:")
+        for line in traceback.format_exc().rstrip().splitlines():
+            print("      " + line)
         _dump_window_chain()
 
     # 5. 副本覆盖率（决定音乐模式敢不敢隐藏真图标）
@@ -178,7 +182,5 @@ def run_diagnose(duration=None):
         print("[5] 副本覆盖率: 跳过（前置项失败）")
 
     print("=" * 56)
-    print("诊断结束。日志: %s" % os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "JellyIcons.log"))
+    print("诊断结束。日志: %s" % paths.data_path("JellyIcons.log"))
     return 0
