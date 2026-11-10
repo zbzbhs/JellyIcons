@@ -27,6 +27,10 @@ import sys
 ROOT = os.path.dirname(os.path.abspath(__file__))
 NAME = "JellyIcons"
 ICON = os.path.join(ROOT, "assets", "jellyicons.ico")
+# 版本资源：填了它 exe 才有"文件说明/产品名/版本"，属性页不再是空白，
+# 也是 Windows 判定可信度的一点点加分项（真正消掉 SmartScreen 需要
+# 代码签名证书，那是另一回事）。
+VERSION_FILE = os.path.join(ROOT, "version_info.txt")
 
 # 明确要收进去的模块
 HIDDEN = [
@@ -85,6 +89,8 @@ def main(argv=None) -> int:
         cmd += ["--hidden-import", mod]
     for mod in EXCLUDE:
         cmd += ["--exclude-module", mod]
+    if os.path.exists(VERSION_FILE):
+        cmd += ["--version-file", VERSION_FILE]
     cmd.append(os.path.join(ROOT, "run.py"))
 
     print("[build] %s" % " ".join(cmd))

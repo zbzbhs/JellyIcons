@@ -198,6 +198,31 @@ tkinter 缺失或被占用时，面板和热键都只记一条日志，主功能
 单文件、免安装、不带注册表项。日志、心跳、comtypes 代码缓存放 exe 同级
 目录（不可写时自动落到 `%LOCALAPPDATA%\JellyIcons`），不污染系统。
 
+#### 如果 Windows 弹出「已保护你的电脑」
+
+会看到红色窗口：
+
+> **Windows 已保护你的电脑**
+> Microsoft Defender SmartScreen 阻止了无法识别的应用启动。
+> 应用：JellyIcons.exe　发行者：发布者未知
+
+这是 SmartScreen 对**未做代码签名**的独立软件的标准反应，不是病毒告警，
+也不是"文件已损坏"。它只说明两件事：这个 exe 没有商业代码签名证书，
+以及它带"来自 Internet"的标记。点 **更多信息 → 仍要运行** 即可。
+
+不放心的话，先自己核对哈希（本仓库每个 Release 的 exe 都可用它校验）：
+
+```powershell
+Get-FileHash .\JellyIcons.exe -Algorithm SHA256
+# v1.7.0: 34AEDE53FE7B51D513490494AD20D888C5435DA95FF1A928294A96A51EFA145B
+```
+
+或者干脆不安 exe，走下面的方式二从源码跑——源码全在这里，一行行能读。
+
+想彻底消掉这个提示只有两条路：买一张代码签名证书（EV 证书才能立刻建立
+信誉，OV 证书要累积下载量），或者把它提交给微软做误报申诉。这两件都不是
+代码能解决的，所以文档里说清楚比藏起来有用。
+
 ### 方式二：从源码跑
 
 需要 Windows 10/11 + Python 3.10 以上。推荐用 `uv`（也能用 `python -m venv`）：
