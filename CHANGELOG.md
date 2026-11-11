@@ -2,6 +2,71 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/)。
 
+## [1.8.0] - 2026-11-11
+
+两件事：**模式从 8 个加到 14 个**，**Q 弹程度交给用户自己调**。
+
+### Added — 6 个新模式
+
+`overlay` 原位层（只缩放，不可能跑偏）：
+
+| 模式 | 说明 |
+|---|---|
+| 多米诺 | 按列 0.085s、按行 0.035s 的延迟把倒伏波传开，倒下去 `sin(p·π)^0.6` 再弹回 |
+| 呼吸 | 以屏幕中心为圆心做同心圆呼吸（`_PERIOD_S=7.4`），最温柔的一档，几乎不打扰视线 |
+
+`takeover` 接管层（移的是我们自己的分层窗口，不写 explorer）：
+
+| 模式 | 说明 |
+|---|---|
+| 拼字 | 把图标当墨点拼出 `JELLY` / `Q` / `LOVE` / `666` / `弹` / `爱` / `梦`，6 秒换一个词，0.45 秒缓入 |
+| 弹球 | 一颗球 420px/s 在屏幕上弹，撞到谁谁吃 46px 冲量再弹回；球本体是离它最近的图标 |
+| 鼠标引力 | 鼠标附近图标被吸过去，`(1-d/r)²` 衰减，半径 3.4 个图标宽 |
+| 放大镜 | 鼠标指向的图标放大（只缩放不位移），离开时平滑缩回 |
+
+- `ModeContext` 新增 `pointer`（鼠标屏幕坐标，`GetCursorPos`，取不到为 `None`
+  时交互类模式自动降级成呼吸，不会一动不动吓人）。
+- `tests/test_modes.py`：14 个模式逐个跑 600 帧验数值边界；`lens` 单独验
+  "放大"而不是"位移"（它的设计就是不动位置）。
+
+### Added — Q 弹程度可调
+
+- **面板新增滑块**：0.3x ~ 2.0x，四档刻度（温柔 0.55 / 标准 1.0 /
+  Q 弹 1.45 / 暴走 2.0），松手即生效并立刻重排几何。
+- `jellyicons/settings.py`：`settings.json` 原子写（tmp + `os.replace`），
+  记住倍率 / 模式 / 音频设备 / 面板位置。文件损坏时回落默认值而不是崩。
+- `config.jelly_max_w(gain)`：画布预留宽度按增益现算
+  （`1 + volumeCap·1.1·squashX·JELLY_GAIN_X·gain`，封顶 2.2）。
+  调到 2.0x 不会裁边，调回 0.55x 不会白占内存。
+- 实测（56px 图标，钩 `App._compose` 量画布墨迹行跨度）：
+  gain 1.0 → 摆幅 **11 px**；gain 2.0 → 摆幅 **14 px**。
+
+### Changed
+
+- 面板位置会记住（拖标题栏松手就落盘），换分辨率时自动夹回屏幕内。
+- `ui.ControlPanel._measure()` 为新增的滑块行加高，`_draw_gain()` 与
+  命中区、`_gain_at()` 共用同一份 `_gain_track` 几何。
+
+### Fixed — 副本压住普通窗口
+
+`UpdateLayeredWindow` 之后调 `ShowWindow` 会把 40 个副本窗口一起顶到 z 序最上层，
+于是桌面图标"浮"在所有窗口上面，盖住浏览器、文件夹、面板。
+
+- `overlay.desktop_anchor()`：取 `Progman` 句柄**只当 z 序参照，绝不修改它**。
+- `overlay.pin_behind_apps()`：`SetWindowPos(hwnd, progman, …)`——
+  插到 Progman 之后一位（实测 `overlay z=499 / Progman z=500`），
+  正好贴着壁纸、压在所有普通窗口之下。
+  注意 **不能用 `HWND_BOTTOM`**：那是掉到 Progman *之下*，被壁纸整个盖住（实测洋红像素 0）。
+- 只在新建、隐藏后重现、以及每 2s（`REZ_PIN_INTERVAL`）补钉一次，
+  40 个窗口不会每帧 2400 次 `SetWindowPos`。
+- `overlay.raise_if_covered()`：显示桌面 / 切用户 / UAC 后系统会重排 z 序，重新钉回原位。
+
+### Tests
+
+135 项单测 + 1 个端到端冒烟，全绿；pyflakes 零告警。
+新增 `tests/test_settings.py`（9 项）：损坏回退 / 前向兼容 / 倍率夹取 /
+面板位置清空。
+
 ## [1.7.1] - 2026-11-10
 
 修一个让 exe **根本起不来**的问题：双击后弹

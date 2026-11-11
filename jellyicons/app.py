@@ -28,10 +28,12 @@ import queue
 import subprocess
 import sys
 import time
+from ctypes import wintypes
 
 from . import click_open, config, jelly, shell_icons
 from . import audio_engine
 from . import integrity
+from . import settings as settings_mod
 from .activity import ActivityDetector
 from .audio_engine import AudioEngine
 from . import hotkey as hotkey_mod
@@ -49,6 +51,11 @@ from PIL import Image
 
 log = get_logger()
 
+_user32 = ctypes.WinDLL("user32", use_last_error=True)
+_user32.GetCursorPos.argtypes = [ctypes.POINTER(wintypes.POINT)]
+_user32.GetCursorPos.restype = wintypes.BOOL
+user32 = _user32
+
 REFRESH_INTERVAL = 0.25   # 秒；重读桌面布局
 # 视为"未变化"的缩放差值：低于此值不重绘（静音时完全跳过）
 SCALE_EPS = 0.001
@@ -57,6 +64,8 @@ REST_SCALE_EPS = 0.004
 # 恢复真图标后继续保留副本的时长：explorer 重绘有延迟，这段窗口里副本
 # 与真图标逐像素重合，撤掉不会闪空桌面。
 EXIT_HOLD_S = 0.12
+# 副本人为钉在 z 序最底，每这么多秒补钉一次，防止被系统重排顶到最上层。
+REZ_PIN_INTERVAL = 2.0
 
 
 def _user_hides_icons() -> bool:
@@ -157,6 +166,13 @@ class App:
         self._screen = None        # (w, h)
         self._mode_label = self.switcher.name
         self._tf_sig = None        # 上一帧的形变签名（跳帧用）
+        # ---- 用户设置（Q 弹程度等） ----
+        # gain 是"Q 弹程度"倍率；画布预留宽度与 jelly.step 都跟着它走，
+        # 所以它一变就必须重建所有 overlay 的几何。
+        self.settings = settings_mod.Settings.load()
+        self._gain = self.settings.gain
+        self._max_w = config.jelly_max_w(self._gain)
+        self._pointer = None       # (x, y) 或 None，给交互类模式用
 
     # ---- 图标源 ----
 
@@ -283,8 +299,9 @@ class App:
         label_w = label.size[0] if label is not None else 0
         label_h = label.size[1] if label is not None else 0
         # 画布宽度要按"本体最大横向放大"预留，否则 Q 弹拉伸时右边缘被裁掉。
-        # 宽度仍与 sx 无关（用 JELLY_MAX_W 这个常量上限），不破坏固定画布。
-        body_slot_w = int(math.ceil(side * config.JELLY_MAX_W))
+        # 宽度仍与 sx 无关（用 self._max_w 这个上限），不破坏固定画布；
+        # 上限随用户的 Q 弹程度变化（见 config.jelly_max_w）。
+        body_slot_w = int(math.ceil(side * self._max_w))
         w = max(body_slot_w + 2 * config.CANVAS_MARGIN, label_w)
         h = (2 * config.CANVAS_MARGIN + side
              + (config.LABEL_GAP + label_h if label is not None else 0))
@@ -603,8 +620,78 @@ class App:
                              "开" if self.auto_switch else "关")
                 elif kind == "device":
                     self._switch_device(cmd.get("index"))
+                elif kind == "set_gain":
+                    self.set_gain(cmd.get("value"))
+                elif kind == "nudge_gain":
+                    self.set_gain(self._gain + float(cmd.get("delta") or 0.0))
+                elif kind == "cycle_gain":
+                    presets = [p[1] for p in settings_mod.GAIN_PRESETS]
+                    nxt = presets[0]
+                    for value in presets:
+                        if value > self._gain + 1e-6:
+                            nxt = value
+                            break
+                    self.set_gain(nxt)
+                elif kind == "save_position":
+                    self.settings["panel_x"] = int(cmd.get("x"))
+                    self.settings["panel_y"] = int(cmd.get("y"))
+                    self.settings.save()
             except Exception as exc:
                 log.warning("[cmd] %r 执行失败: %r", cmd, exc)
+
+    # ---- Q 弹程度 ----
+
+    def set_gain(self, value):
+        """改 Q 弹程度：重算画布预留宽度，几何全量重建。
+
+        画布宽度依赖 _max_w，而 _max_w 又依赖 gain —— 不重建几何的话，
+        调大增益后峰值帧会被旧画布裁边，调小则会白占内存。
+        """
+        new = self.settings.set_gain(value)
+        if abs(new - self._gain) < 1e-4:
+            return self._gain
+        old_max_w = self._max_w
+        self._gain = new
+        self._max_w = config.jelly_max_w(new)
+        log.info("[gain] Q 弹程度 %.2fx（画布预留 %.2f → %.2f）",
+                 new, old_max_w, self._max_w)
+        if abs(self._max_w - old_max_w) > 1e-4:
+            self._relayout_all()
+        self._reset_transforms()
+        self.settings.save()
+        return self._gain
+
+    def _relayout_all(self):
+        """按新画布宽度重算每个 overlay 的几何（窗口会移动/改尺寸）。
+
+        OverlayWindow.draw() 在图片尺寸变化时会自己重建 DIB，所以这里
+        只需要把新几何写进 entry、把状态标记成脏，下一帧画的时候自然生效。
+        """
+        for key, entry in list(self.overlays.items()):
+            icon = entry["icon"]
+            img = self._icon_for(key, icon.name)
+            if img is None:
+                continue
+            label = self._get_label(icon.name)
+            geom = self._layout(icon, img, label)
+            entry["geom"] = geom
+            entry["dirty"] = True
+            entry["_last_state"] = None
+            entry["ready"] = False
+
+    def pointer(self):
+        return self._pointer
+
+    def _update_pointer(self):
+        """每帧读一次鼠标位置（交互类模式用）。取不到就置 None。"""
+        try:
+            pt = wintypes.POINT()
+            if user32.GetCursorPos(ctypes.byref(pt)):
+                self._pointer = (pt.x, pt.y)
+            else:
+                self._pointer = None
+        except Exception:
+            self._pointer = None
 
     def _reset_transforms(self):
         """切模式后强制重绘一帧（形变签名和 dirty 都要失效）。"""
@@ -708,6 +795,7 @@ class App:
         start = time.perf_counter()
         last_frame = start
         next_layout = 0.0
+        next_pin = 0.0
         frames = 0
         drawn = 0
         next_report = 5.0
@@ -730,13 +818,15 @@ class App:
                 break
             dt = max(1e-4, min(0.25, now - last_frame))
             last_frame = now
+            # 交互类模式（鼠标引力/放大镜）要鼠标位置：每帧取一次
+            self._update_pointer()
 
             # 音频 → 逐频段 AGC → 低频/活动度
             bands = self.audio.bands()
             bass, presence = self.detector.update(bands, dt)
             # AGC 后的低频（典型 0.3~1.0）换算成壁纸量级（volumeCap=0.05），
             # 否则 pulse 恒饱和，形变永远是最大值
-            sx, sy = self.jelly.step(bass * config.AGC_TO_VOL)
+            sx, sy = self.jelly.step(bass * config.AGC_TO_VOL, gain=self._gain)
 
             # 模式：由 switcher 决定这一刻谁说话。transforms 是逐图标的形变，
             # engine 决定这一档允不允许位移（overlay 恒 0）。
@@ -744,12 +834,13 @@ class App:
                 icons=[(key, entry["icon"])
                        for key, entry in self.overlays.items()],
                 bands=bands, bass=bass, presence=presence,
-                jelly=self.jelly, screen=self._screen_size(), now=now)
+                jelly=self.jelly, screen=self._screen_size(), now=now,
+                pointer=self._pointer)
             transforms, engine, blend = self.switcher.tick(
                 ctx, dt, active=presence >= config.MUSIC_ON_THRESHOLD)
             # 按引擎规整：overlay 档强制丢弃位移，缩放夹在画布预留范围内
-            max_w = config.JELLY_MAX_W
-            transforms = {key: tf.clamp(engine, max_w, 0.45)
+            # （max_w 跟着用户的 Q 弹程度走，否则拉满时会裁边）
+            transforms = {key: tf.clamp(engine, self._max_w, 0.45)
                           for key, tf in transforms.items()}
             self._transforms = transforms
             if engine != self._engine:
@@ -825,6 +916,16 @@ class App:
 
             if hidden:
                 self._watcher.poll(now)
+                # 副本身处 z 序最底，一旦有程序调用 SetForegroundWindow 或
+                # 系统重排（显示桌面、切用户、UAC），副本就会被顶到最上层，
+                # 把别的窗口盖住。每 2s 统一补钉一次，成本可忽略。
+                if elapsed >= next_pin:
+                    next_pin = elapsed + REZ_PIN_INTERVAL
+                    for entry in self.overlays.values():
+                        try:
+                            entry["win"].raise_if_covered()
+                        except Exception as exc:
+                            log.warning("[overlay] 重新钉底失败: %r", exc)
 
             # 面板读的快照：整份不可变，面板线程只读
             self._publish(
@@ -837,7 +938,9 @@ class App:
                 device=self.audio.device_name,
                 audio_ok=bool(self.audio.available),
                 version=__version__, mode_count=len(self.mode_list),
-                hotkeys=self.hotkey_hints)
+                hotkeys=self.hotkey_hints, gain=float(self._gain),
+                panel_x=self.settings.get("panel_x"),
+                panel_y=self.settings.get("panel_y"))
 
             spent = time.perf_counter() - now
             sleep = frame_time - spent

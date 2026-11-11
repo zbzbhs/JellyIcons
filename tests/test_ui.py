@@ -27,15 +27,21 @@ MODES = [
     ("wave", "海浪", "takeover"),
     ("ring", "星环", "takeover"),
     ("firework", "烟花", "overlay"),
+    ("spell", "拼字", "takeover"),
+    ("ball", "弹球", "takeover"),
+    ("gravity", "鼠标引力", "takeover"),
+    ("lens", "放大镜", "takeover"),
+    ("domino", "多米诺", "overlay"),
+    ("breath", "呼吸", "overlay"),
 ]
 
 
 def _snap(**kw):
     base = dict(
-        version="1.7.0", mode="jelly", mode_title="律动", engine="overlay",
+        version="1.8.0", mode="jelly", mode_title="律动", engine="overlay",
         hidden=False, icons=38, fps=60, audio_ok=True, auto=True,
         device="耳机 (Senary Audio) [Loopback]", bands=[0.3] * 64,
-        bass=0.3, presence=0.3, mode_count=8,
+        bass=0.3, presence=0.3, mode_count=14, gain=1.0,
         hotkeys=["Ctrl+Alt+F9  退出"], )
     base.update(kw)
     return base
@@ -74,7 +80,7 @@ class LayoutTests(unittest.TestCase):
 
     def test_height_fits_every_section(self):
         """高度必须真的装下所有区块（footer 热键行曾被裁掉）。"""
-        for kw in ({}, {"mode_count": 8}, {"mode_count": 4},
+        for kw in ({}, {"mode_count": 14}, {"mode_count": 4},
                    {"mode_count": 12}):
             with self.subTest(**kw):
                 snap = _snap(**kw)
@@ -154,6 +160,47 @@ class HitTests(unittest.TestCase):
         x, y = self._center("drag")
         self.assertGreater(y, 0)
         self.assertLess(y, ui.ControlPanel.HEADER_H)
+
+    # ---- Q 弹程度滑块 ----
+
+    def test_gain_row_hit_exists(self):
+        self._center("gain")   # 找不到会 AssertionError
+
+    def test_click_gain_posts_set_gain(self):
+        from jellyicons import settings
+        x, y = self._center("gain")
+        self.panel._on_release(type("E", (), {"x": x, "y": y})())
+        self.assertEqual(len(self.app.posted), 1)
+        cmd = self.app.posted[0]
+        self.assertEqual(cmd["type"], "set_gain")
+        # 点在轨道中点，倍率应落在区间中部
+        mid = (settings.GAIN_MIN + settings.GAIN_MAX) / 2.0
+        self.assertAlmostEqual(cmd["value"], mid, delta=0.15)
+
+    def test_gain_at_maps_ends(self):
+        from jellyicons import settings
+        self.panel._render_for_test = True
+        _hits, _h, _y = _render(self.panel, _snap())
+        self.panel._hits = _hits
+        tx0, tx1 = self.panel._gain_track[0], self.panel._gain_track[1]
+        self.assertAlmostEqual(self.panel._gain_at(tx0), settings.GAIN_MIN,
+                               places=5)
+        self.assertAlmostEqual(self.panel._gain_at(tx1), settings.GAIN_MAX,
+                               places=5)
+        # 越界点击夹到区间端点，不能跑出 GAIN_MIN..GAIN_MAX
+        self.assertAlmostEqual(self.panel._gain_at(tx0 - 500),
+                               settings.GAIN_MIN, places=5)
+        self.assertAlmostEqual(self.panel._gain_at(tx1 + 500),
+                               settings.GAIN_MAX, places=5)
+
+    def test_gain_row_shows_current_value(self):
+        """快照里的 gain 必须被画出来（否则拖完看不出变化）。"""
+        panel = ui.ControlPanel(_FakeApp())
+        for value in (0.3, 1.0, 1.45, 2.0):
+            with self.subTest(gain=value):
+                hits, _h, _y = _render(panel, _snap(gain=value))
+                self.assertTrue(any(h[4] == "gain" for h in hits))
+                self.assertIsNotNone(panel._gain_track)
 
 
 class WaveTests(unittest.TestCase):

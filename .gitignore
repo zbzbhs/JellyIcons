@@ -19,6 +19,9 @@ Thumbs.db
 desktop.ini
 push_via_api.py
 
+# 运行时状态（倍率 / 模式 / 面板位置，每台机器自己生成）
+settings.json
+
 # PyInstaller 产物（要发布走 GitHub Release，不进仓库）
 build/
 dist/

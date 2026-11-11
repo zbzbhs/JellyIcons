@@ -31,6 +31,7 @@ SWP_NOSIZE = 0x0001
 SWP_NOACTIVATE = 0x0010
 SWP_NOOWNERZORDER = 0x0200
 SWP_NOSENDCHANGING = 0x0400
+SWP_NOREDRAW = 0x0008
 
 HWND = wintypes.HWND
 LPVOID = ctypes.c_void_p
@@ -94,6 +95,8 @@ def _types() -> None:
     user32.ShowWindow.argtypes = [HWND, ctypes.c_int]
     user32.SetWindowPos.argtypes = [HWND, HWND, ctypes.c_int, ctypes.c_int,
                                     ctypes.c_int, ctypes.c_int, wintypes.UINT]
+    user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+    user32.FindWindowW.restype = HWND
     user32.GetWindowLongW.argtypes = [HWND, ctypes.c_int]
     user32.GetWindowLongW.restype = wintypes.LONG
     gdi32.CreateCompatibleDC.argtypes = [wintypes.HDC]
@@ -139,6 +142,17 @@ def _register_class() -> None:
     _window_class_registered = True
 
 
+def desktop_anchor():
+    """返回桌面壁纸窗口（Progman）的句柄，仅作为 z 序参照，绝不修改它。
+
+    没有它只能钉到 HWND_BOTTOM，那会掉到 Progman *之下*，被壁纸整个盖掉；
+    插到 Progman 之后（z 序更高一位）才是「贴着壁纸、压在所有普通窗口下面」
+    的正确落点。取不到就返回 0，此时不钉，宁可浮在上面也不隐藏。
+    """
+    progman = user32.FindWindowW("Progman", "Program Manager")
+    return progman or 0
+
+
 class OverlayWindow:
     """A non-activating top-level window that never consumes mouse input."""
 
@@ -158,6 +172,8 @@ class OverlayWindow:
         self._pixels = None
         self._buffer_size = (0, 0)
         self._closed = False
+        self._shown = False
+        self._needs_pin = True
 
     def _ensure_buffer(self, width: int, height: int) -> None:
         if self._buffer_size == (width, height):
@@ -200,7 +216,41 @@ class OverlayWindow:
                 self.hwnd, self._screen_dc, ctypes.byref(destination), ctypes.byref(size),
                 self._memory_dc, ctypes.byref(source), 0, ctypes.byref(blend), ULW_ALPHA):
             raise ctypes.WinError(ctypes.get_last_error())
-        user32.ShowWindow(self.hwnd, SW_SHOWNOACTIVATE)
+        if not self._shown:
+            user32.ShowWindow(self.hwnd, SW_SHOWNOACTIVATE)
+            self._shown = True
+            self._needs_pin = True
+        if self._needs_pin:
+            self.pin_behind_apps()
+
+    def pin_behind_apps(self) -> bool:
+        """把本窗口贴到壁纸之上、所有普通窗口之下。
+
+        每帧都钉成本太高（40 个窗口 60fps 就是 2400 次 SetWindowPos），
+        所以只在新建、隐藏后重现、以及被抢到最前时补一次。
+        """
+        if self._closed or not self.hwnd:
+            return False
+        anchor = desktop_anchor()
+        if not anchor:
+            self._needs_pin = False
+            return False
+        # 不用 SWP_NOREDRAW：分层窗口的内容由 UpdateLayeredWindow 提供，
+        # 改 z 序时抑制重绘只会让系统跳过重排后的补救绘制，没有收益。
+        # 补钉本身只在新建 / 重现 / 每 2s 一次，代价可以忽略。
+        ok = user32.SetWindowPos(
+            self.hwnd, anchor, 0, 0, 0, 0,
+            SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE | SWP_NOOWNERZORDER
+            | SWP_NOSENDCHANGING)
+        self._needs_pin = not ok
+        return bool(ok)
+
+    def raise_if_covered(self) -> None:
+        """窗口若被系统重新排到顶层（显示桌面、切用户、UAC），重新钉一次。"""
+        if self._closed or not self.hwnd or not self._shown:
+            return
+        self._needs_pin = True
+        self.pin_behind_apps()
 
     def move(self, x: int, y: int) -> None:
         user32.SetWindowPos(self.hwnd, None, int(x), int(y), 0, 0,
@@ -211,6 +261,7 @@ class OverlayWindow:
         if self._closed or not self.hwnd:
             return
         user32.ShowWindow(self.hwnd, 0)   # SW_HIDE
+        self._shown = False
 
     def close(self) -> None:
         if self._closed:

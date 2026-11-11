@@ -101,7 +101,8 @@ class Mode:
 class ModeContext:
     """模式能看到的全部东西（只读视图，模式不该回写）。"""
 
-    def __init__(self, icons, bands, bass, presence, jelly, screen, now):
+    def __init__(self, icons, bands, bass, presence, jelly, screen, now,
+                 pointer=None):
         self.icons = icons          # [(key, DesktopIcon)]
         # 64 段 AGC 后的频段。audio.bands() 返回的是 numpy 数组，
         # 而 numpy 数组不能直接当布尔用（`if bands` 会抛 ValueError），
@@ -113,6 +114,9 @@ class ModeContext:
         self.jelly = jelly          # JellyState（律动类模式共用）
         self.screen = screen        # (w, h)
         self.now = now
+        # 鼠标屏幕坐标 (x, y)；取不到时为 None（远端桌面、无输入会话）。
+        # 只有"鼠标引力/放大镜"这类交互模式用得上，其余模式忽略即可。
+        self.pointer = pointer
 
     def center(self, icon):
         left, top, right, bottom = icon.rect

@@ -136,6 +136,23 @@ JELLY_MAX_W = 1.35
 # 纵向只压扁（scaleY ≤ 1），画布高度不需要额外预留：
 # h = 2*margin + side + (LABEL_GAP + label_h)
 
+# 画布宽度可以到多宽（相对本体边长）。用户把 Q 弹程度拉满时，画布必须
+# 跟着变宽，否则极端帧会裁掉右边缘；但也不能无限宽 —— 2.2 已经能让
+# 56px 图标在峰值帧占满 123px，再宽就明显盖住左右邻居了。
+JELLY_MAX_W_CAP = 2.2
+
+
+def jelly_max_w(gain=1.0):
+    """按 Q 弹倍率算出"画布宽度 / 本体边长"应该预留多少。
+
+    理论上限 = 1 + volumeCap*1.1*squashX*JELLY_GAIN_X*gain（pulse 顶死）。
+    gain=1.0 时正好回到 JELLY_MAX_W（1.3465 → 留到 1.35），
+    所以老行为一个像素都不变。
+    """
+    pulse_cap = DOLL["volumeCap"] * 1.1
+    need = 1.0 + pulse_cap * DOLL["squashX"] * JELLY_GAIN_X * max(0.1, gain)
+    return min(JELLY_MAX_W_CAP, max(JELLY_MAX_W, need))
+
 # ---- 动画模式（双引擎）----
 # 每种模式用 engine 字段声明自己属于哪一档：
 #   overlay   原位果冻，只缩放不位移（最稳，永不错位）

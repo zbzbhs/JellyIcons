@@ -141,16 +141,22 @@ class JellyState(object):
         self.scaleX = max(config.MIN_SCALE, min(ms, self.scaleX))
         self.scaleY = max(config.MIN_SCALE, min(ms, self.scaleY))
 
-    def step(self, raw_vol, cfg_sens=config.GLOBAL_SENSITIVITY):
-        """一帧。返回 (scaleX, scaleY)。"""
+    def step(self, raw_vol, cfg_sens=config.GLOBAL_SENSITIVITY, gain=1.0):
+        """一帧。返回 (scaleX, scaleY)。
+
+        gain 是用户在面板上选的"Q 弹程度"倍率（1.0 = 出厂手感）。
+        它同时缩放 X/Y 两个方向，所以调大是整体更夸张、不是只有横向变形。
+        """
         p = self.params
         pulse = self.process_pulse(raw_vol, cfg_sens)
         self.energy = pulse
+        gx = config.JELLY_GAIN_X * gain
+        gy = config.JELLY_GAIN_Y * gain
         # 壁纸：updateScale(st, 1 + pulse*squashX, 1 - pulse*squashY, p)
         # 桌面版再加一层增益：图标只有 56px，同样的百分比看不清；
         # 且横向拉伸天生不如纵向压扁显眼，所以 X 增益大于 Y。
-        tx = 1.0 + pulse * p["squashX"] * config.JELLY_GAIN_X
-        ty = 1.0 - pulse * p["squashY"] * config.JELLY_GAIN_Y
+        tx = 1.0 + pulse * p["squashX"] * gx
+        ty = 1.0 - pulse * p["squashY"] * gy
         self.update_scale(tx, ty)
         return self.scaleX, self.scaleY
 

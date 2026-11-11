@@ -11,9 +11,10 @@
 
 为什么要两个 GIF：
     demo.gif   单看"律动"——能看清 Q 弹的形变细节（慢、大、清楚）。
-    modes.gif  依次走 律动 → 音浪 → 心动 → 海浪 → 星环，用真实的
-               切换器与过渡，一次看到"两套引擎"的差别：前三档里
-               overlay 只缩放（原位），后两档 takeover 会位移重排。
+    modes.gif  依次走 律动 → 音浪 → 烟花 → 心动 → 拼字 → 弹球 →
+               鼠标引力 → 多米诺 → 呼吸，用真实的切换器与过渡，一次
+               看到"两套引擎"的差别：overlay 档只缩放（原位），
+               takeover 档会位移重排。
 """
 import math
 import os
@@ -167,6 +168,13 @@ def make_jelly(out_name="demo.gif"):
     _save(frames, os.path.join(HERE, out_name), fps)
 
 
+def _orbit(t, w, h):
+    """给"鼠标引力/放大镜"造一个绕圈的光标轨迹。"""
+    cx, cy = w * 0.5, h * 0.46
+    r = min(w, h) * 0.30
+    return (cx + r * math.cos(t * 1.15), cy + r * 0.62 * math.sin(t * 1.15))
+
+
 def make_modes(out_name="modes.gif"):
     """多模式巡礼：走真实的切换器与过渡。"""
     w, h, fps = 520, 350, 16
@@ -179,8 +187,9 @@ def make_modes(out_name="modes.gif"):
     state = jelly.make_state(is_big=False)
     sw = ModeSwitcher(start="jelly", auto=False)
     # 手动排一段顺序：先用 dwell 短一点，让 GIF 里每个模式都能看清
-    plan = [("jelly", 2.2), ("bands", 2.2), ("heart", 2.6),
-            ("wave", 2.6), ("ring", 2.6)]
+    plan = [("jelly", 1.9), ("bands", 1.9), ("firework", 1.9),
+            ("heart", 1.9), ("spell", 2.1), ("ball", 1.9),
+            ("gravity", 1.9), ("domino", 1.9), ("breath", 1.9)]
     mode_titles = {n: create(n).title for n in sw.order}
 
     frames = []
@@ -202,7 +211,7 @@ def make_modes(out_name="modes.gif"):
             ctx = ModeContext(
                 icons=[(it["key"], _Cell(it)) for it in items],
                 bands=bands, bass=bass, presence=presence, jelly=state,
-                screen=(w, h), now=t)
+                screen=(w, h), now=t, pointer=_orbit(t, w, h))
             transforms, engine, _k = sw.tick(ctx, dt, active=True)
             transforms = {k: tf.clamp(engine, config.JELLY_MAX_W, 0.45)
                           for k, tf in transforms.items()}
@@ -217,12 +226,20 @@ def make_modes(out_name="modes.gif"):
 
 
 class _Cell:
-    """模式只用到 rect 和 center()，这里给个最小实现。"""
+    """模式只用到 rect / width / height / center()，这里给个最小实现。"""
 
     def __init__(self, it):
         self.key = it["key"]
         self.name = it["name"]
         self.rect = it["cell"]
+
+    @property
+    def width(self):
+        return self.rect[2] - self.rect[0]
+
+    @property
+    def height(self):
+        return self.rect[3] - self.rect[1]
 
 
 def main(argv):

@@ -21,6 +21,7 @@ TARGETS = [
     "tests/test_single_instance.py",
     "tests/test_modes.py",
     "tests/test_hotkey.py",
+    "tests/test_settings.py",
     "tests/test_ui.py",
     "smoke_v13.py",
 ]

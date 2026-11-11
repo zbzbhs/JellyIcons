@@ -21,6 +21,7 @@ from __future__ import annotations
 import os
 import threading
 
+from . import settings
 from .logutil import get_logger
 
 log = get_logger()
@@ -147,6 +148,7 @@ class ControlPanel:
         self._hover = None
         self._collapsed = False
         self._drag = None
+        self._dragged = False
         self._peaks = [0.0] * 64
         self._last_bands = None
         self._device_open = False
@@ -227,11 +229,23 @@ class ControlPanel:
         root = self._root
         if root is None:
             return
-        # 默认贴屏幕右上角，离边缘留一点呼吸
+        # 记住上次拖到的位置；没有就用"右上角 + 留点呼吸"
+        x = y = None
+        try:
+            snap = self.app.snapshot() or {}
+            x, y = snap.get("panel_x"), snap.get("panel_y")
+        except Exception:
+            x = y = None
         try:
             sw = root.winfo_screenwidth()
-            x = max(0, sw - WIDTH - 28)
-            y = 72
+            sh = root.winfo_screenheight()
+            if x is None:
+                x = sw - WIDTH - 28
+            if y is None:
+                y = 72
+            # 越界（换了分辨率/拔了副屏）就夹回屏幕内，别把面板丢在屏幕外
+            x = max(0, min(int(x), sw - WIDTH))
+            y = max(0, min(int(y), sh - 120))
             root.geometry("+%d+%d" % (x, y))
         except Exception:
             pass
@@ -289,6 +303,7 @@ class ControlPanel:
         y = self._draw_modes(d, snap, y, hits)
         y = self._draw_switch(d, snap, y, hits)
         y = self._draw_device(d, snap, y, hits)
+        y = self._draw_gain(d, snap, y, hits)
         return self._draw_footer(d, snap, y, hits)
 
     def _modes(self):
@@ -309,8 +324,10 @@ class ControlPanel:
         rows = max(1, (count + 3) // 4)
         h = (8 + self.HEADER_H + 6 + self.STATUS_H + 10 + self.WAVE_H + 12
              + rows * self.MODE_ROW_H + (rows - 1) * 8 + 12
-             + self.ROW_H + 8 + self.ROW_H + 10
-             + 44 + 10 + 48)
+             + self.ROW_H + 8          # 自动轮换
+             + self.ROW_H + 8          # 音频输出
+             + self.ROW_H + 10         # Q 弹程度
+             + 44 + 10 + 48)           # 停止按钮 + 热键提示
         return h
 
     def _blit(self, img, height):
@@ -541,6 +558,59 @@ class ControlPanel:
         hits.append((PAD, y, WIDTH - PAD, y + self.ROW_H, "device"))
         return y + self.ROW_H
 
+    def _draw_gain(self, d, snap, y, hits):
+        """Q 弹程度：一条可点的轨道 + 当前倍率。
+
+        轨道上画出四档预设的刻度，"标准"位置永远有一道小竖线当锚点，
+        这样用户拖到哪都知道自己偏离默认多远。
+        """
+        y += 8
+        box = [PAD, y, WIDTH - PAD, y + self.ROW_H]
+        _rr(d, box, 10, fill=SURFACE, outline=BORDER)
+        cy = y + self.ROW_H / 2
+        d.text((PAD + 14, cy), "Q 弹程度", font=_font(12), fill=TEXT,
+               anchor="lm")
+
+        gain = float(snap.get("gain") or 1.0)
+        lo, hi = settings.GAIN_MIN, settings.GAIN_MAX
+        span = max(1e-6, hi - lo)
+        cur = min(1.0, max(0.0, (gain - lo) / span))
+
+        tx0 = PAD + 96
+        tx1 = WIDTH - PAD - 58
+        _rr(d, [tx0, cy - 3, tx1, cy + 3], 3, fill=(40, 47, 60))
+        # 四档预设刻度（细线，便于对齐手感）
+        for _label, value in settings.GAIN_PRESETS:
+            k = min(1.0, max(0.0, (value - lo) / span))
+            px = tx0 + (tx1 - tx0) * k
+            d.line([(px, cy - 6), (px, cy + 6)], fill=(58, 68, 86))
+        # 已填部分 + 滑块
+        px = tx0 + (tx1 - tx0) * cur
+        if px > tx0:
+            _rr(d, [tx0, cy - 3, px, cy + 3], 3, fill=ACCENT_DIM)
+        hover = self._hover in ("gain", "gain:track")
+        r = 8 if hover else 7
+        d.ellipse([px - r, cy - r, px + r, cy + r],
+                  fill=ACCENT, outline=(16, 22, 30), width=2)
+        # 数值
+        d.text((WIDTH - PAD - 12, cy), "%.2fx" % gain, font=_font(11, True),
+               fill=ACCENT, anchor="rm")
+        hits.append((tx0 - 8, y, tx1 + 8, y + self.ROW_H, "gain"))
+        self._gain_track = (tx0, tx1, y, y + self.ROW_H)
+        return y + self.ROW_H
+
+    def _gain_at(self, x):
+        """把点击的 x 换算成 gain 值（夹在预设范围内）。"""
+        track = getattr(self, "_gain_track", None)
+        if not track:
+            return None
+        tx0, tx1 = track[0], track[1]
+        if tx1 <= tx0:
+            return None
+        k = (float(x) - tx0) / (tx1 - tx0)
+        k = min(1.0, max(0.0, k))
+        return settings.GAIN_MIN + (settings.GAIN_MAX - settings.GAIN_MIN) * k
+
     def _draw_footer(self, d, snap, y, hits):
         y += 10
         # 主按钮：停止
@@ -586,6 +656,7 @@ class ControlPanel:
             try:
                 self._root.geometry("+%d+%d" % (self._drag[2] + dx,
                                                 self._drag[3] + dy))
+                self._dragged = True
             except Exception:
                 pass
 
@@ -606,6 +677,15 @@ class ControlPanel:
         dragged = self._drag is not None
         self._drag = None
         if dragged:
+            # 拖动结束才落盘，否则每移动一像素就写一次文件
+            if getattr(self, "_dragged", False):
+                self._dragged = False
+                try:
+                    self.app.post({"type": "save_position",
+                                   "x": self._root.winfo_x(),
+                                   "y": self._root.winfo_y()})
+                except Exception:
+                    pass
             return
         action = self._hit(event.x, event.y)
         if action is None:
@@ -622,6 +702,10 @@ class ControlPanel:
             self.app.post({"type": "toggle_auto"})
         elif action == "device":
             self._open_device_menu()
+        elif action == "gain":
+            value = self._gain_at(event.x)
+            if value is not None:
+                self.app.post({"type": "set_gain", "value": value})
         elif action.startswith("mode:"):
             self.app.post({"type": "select_mode", "name": action[5:]})
 

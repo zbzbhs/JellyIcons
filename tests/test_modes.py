@@ -30,6 +30,14 @@ class _Icon:
         self.name = key
         self.rect = rect
 
+    @property
+    def width(self):
+        return self.rect[2] - self.rect[0]
+
+    @property
+    def height(self):
+        return self.rect[3] - self.rect[1]
+
 
 def _icons(n=5):
     out = []
@@ -41,24 +49,32 @@ def _icons(n=5):
     return out
 
 
-def _ctx(presence=0.7, bass=0.9, bands=None, now=10.0, n=5):
+def _ctx(presence=0.7, bass=0.9, bands=None, now=10.0, n=5,
+         pointer=(120, 96)):
+    """默认鼠标放在第一个图标附近但不正中 —— 交互类模式要"够得着"才动。
+
+    放在正中心会让 (dxs/dist) 归一化后变成 0，位移恰好为 0，看起来像
+    "模式不动"，其实是"鼠标正好压在图标正中、没有方向可推"。
+    """
     if bands is None:
         bands = [min(1.0, 0.2 + 0.5 * math.sin(i * 0.4)) for i in range(64)]
     return ModeContext(icons=_icons(n), bands=bands, bass=bass,
                        presence=presence, jelly=jelly.make_state(),
-                       screen=(1920, 1080), now=now)
+                       screen=(1920, 1080), now=now, pointer=pointer)
 
 
 class RegistrationTests(unittest.TestCase):
-    def test_eight_modes_registered(self):
-        self.assertEqual(len(ALL_MODES), 8)
-        self.assertEqual(len(names()), 8)
-        self.assertEqual(len(set(names())), 8, "模式名不能重复")
+    def test_fourteen_modes_registered(self):
+        self.assertEqual(len(ALL_MODES), 14)
+        self.assertEqual(len(names()), 14)
+        self.assertEqual(len(set(names())), 14, "模式名不能重复")
 
     def test_expected_order(self):
         # 面板按钮顺序 = 这个顺序，改顺序要同步改 README
         self.assertEqual(names(), ["jelly", "free", "kun", "heart",
-                                   "bands", "wave", "ring", "firework"])
+                                   "bands", "wave", "ring", "firework",
+                                   "spell", "ball", "gravity", "lens",
+                                   "domino", "breath"])
 
     def test_every_mode_has_metadata(self):
         for cls in ALL_MODES:
@@ -134,7 +150,11 @@ class BoundedTests(unittest.TestCase):
             with self.subTest(mode=name):
                 mode = create(name)
                 mode.attach(ctx)
-                out = mode.tick(ctx, 1.0 / 60.0)
+                # 头几帧 engage 还在爬坡（有的模式这期间故意返回空），
+                # 所以跑几帧再取最后一次输出。
+                out = {}
+                for _ in range(4):
+                    out = mode.tick(ctx, 1.0 / 60.0) or out
                 self.assertTrue(out, "%s 在有频段时不应返回空" % name)
                 for tf in out.values():
                     self.assertTrue(math.isfinite(tf.sx))
@@ -165,13 +185,22 @@ class BoundedTests(unittest.TestCase):
                 self.assertEqual(worst["dy"], 0.0, name)
 
     def test_takeover_modes_actually_move(self):
-        """反过来，takeover 模式如果一动不动，说明它就是坏掉的。"""
+        """反过来，takeover 模式如果一动不动，说明它就是坏掉的。
+
+        `lens`（放大镜）是唯一的例外：它的设计就是"只放大不位移"，
+        所以对它验的是缩放幅度，不是位移。
+        """
         for name in names():
             if BY_NAME[name].engine != ENGINE_TAKEOVER:
                 continue
             with self.subTest(mode=name):
                 worst, _bad = self._run(name)
-                self.assertGreater(worst["dx"] + worst["dy"], 0.5, name)
+                if name == "lens":
+                    self.assertGreater(abs(worst["sx"] - 1.0)
+                                       + abs(worst["sy"] - 1.0), 0.05,
+                                       "lens 应该放大")
+                else:
+                    self.assertGreater(worst["dx"] + worst["dy"], 0.5, name)
 
     def test_silence_is_calm(self):
         """没有音乐时任何模式都不该大幅形变（否则切回真图标会看到跳）。"""
